@@ -2,12 +2,12 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
-from utils.metrics import jac_score, precision,recall, F2
+from upstream.metrics import jac_score, precision,recall, F2
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
-from utils.data_loding import MoireTargetDataset
-from utils.sfr.sfrnet import build_SFR
+from upstream.data_loding import MoireTargetDataset
+from upstream.sfr.sfrnet import build_SFR
 
 
 def train_one_epoch(model, loader, optimizer, criterion, scaler, device):

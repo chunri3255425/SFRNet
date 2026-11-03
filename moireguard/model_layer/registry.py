@@ -12,8 +12,8 @@ from typing import Optional
 
 import torch
 
-from app.model_layer.contracts import ModelBundle, IInputAdapter, IOutputAdapter, DetectorCore
-from app.model_layer.builtin_adapter import RGBInputAdapter, SFRNetOutputAdapter
+from moireguard.model_layer.contracts import ModelBundle, IInputAdapter, IOutputAdapter, DetectorCore
+from moireguard.model_layer.builtin_adapter import RGBInputAdapter, SFRNetOutputAdapter
 
 
 class ModelRegistry:
@@ -41,7 +41,7 @@ class ModelRegistry:
         """注册内置模型"""
         # SFRNet UHD 模型
         try:
-            from app.model_layer.detectors.sfrnet_detector import SFRNetDetector
+            from moireguard.model_layer.detectors.sfrnet_detector import SFRNetDetector
             self.register(ModelBundle(
                 model_id="sfrnet_uhd",
                 display_name="SFRNet (UHD Moiré)",

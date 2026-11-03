@@ -12,7 +12,7 @@
 - 创建 `docs/` 文档目录结构
 - 添加 `ARCHITECTURE.md` 架构概览文档
 - 添加 `CHANGELOG.md` 变更日志
-- 创建 `app/` 软件主体框架
+- 创建 `moireguard/` 软件主体框架
   - 模型层: 接口契约 + 默认适配器 + 注册表
   - 逻辑层: 推理服务 + 滑窗引擎 + 后处理器 + 导出服务
   - 控制层: 占位 (待 M3 阶段实现)
@@ -25,6 +25,9 @@
 - 移动 `TECHNICAL_DOC.md` → `docs/design/`
 - 移动 `SFRNet大创创意方向方案.md` → `docs/`
 - 移动 `SFR_best.pth` → `assets/weights/`
+- 重命名 `app/` → `moireguard/` (与软件代号对齐)
+- 重命名 `utils/` → `upstream/` (上游代码隔离，语义更清晰)
+- 更新所有 Python import 路径引用
 
 ### Fixed
 - (待记录)

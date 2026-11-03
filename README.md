@@ -22,9 +22,9 @@ pip install -r requirements.txt
 ### 运行推理
 
 ```python
-from app.logic_layer import InferenceService, InferenceRequest
-from app.model_layer import ModelRegistry
-from app.logic_layer.config import ConfigManager
+from moireguard.logic_layer import InferenceService, InferenceRequest
+from moireguard.model_layer import ModelRegistry
+from moireguard.logic_layer.config import ConfigManager
 
 # 初始化
 config = ConfigManager()
@@ -43,11 +43,11 @@ print(f"存在摩尔纹: {result.has_moire}")
 
 ```
 SFRNet/
-├── app/                    # 软件主体
+├── moireguard/             # 软件主体
 │   ├── model_layer/        # 模型层 (接口 + 适配器)
 │   ├── logic_layer/        # 逻辑层 (推理编排)
 │   └── control_layer/      # 控制层 (UI)
-├── utils/                  # 上游算法代码 (冻结)
+├── upstream/               # 上游算法代码 (冻结)
 ├── configs/                # 配置文件
 ├── assets/weights/         # 模型权重
 ├── tests/                  # 测试

@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from PIL import Image
 from dataclasses import replace
 
-from app.model_layer.contracts import (
+from moireguard.model_layer.contracts import (
     IInputAdapter,
     IOutputAdapter,
     DetectorOutput,

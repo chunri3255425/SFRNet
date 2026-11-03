@@ -32,12 +32,12 @@ env/
 *.swo
 *~
 
-# 数据目录
-data/
-
 # 检查点
 checkpoints/
 *.pth
+
+# 数据目录
+data/
 
 # 日志
 logs/

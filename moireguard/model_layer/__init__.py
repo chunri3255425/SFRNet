@@ -14,7 +14,7 @@
   ❌ 不打印日志
 """
 
-from app.model_layer.contracts import (
+from moireguard.model_layer.contracts import (
     IInputAdapter,
     IOutputAdapter,
     DetectorCore,
@@ -22,7 +22,7 @@ from app.model_layer.contracts import (
     InputMeta,
     ModelBundle,
 )
-from app.model_layer.registry import ModelRegistry
+from moireguard.model_layer.registry import ModelRegistry
 
 __all__ = [
     "IInputAdapter",

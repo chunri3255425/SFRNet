@@ -5,7 +5,7 @@ import yaml
 import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
-from utils.sfr.sfrnet import build_SFR
+from upstream.sfr.sfrnet import build_SFR
 
 
 def main():

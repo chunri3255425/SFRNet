@@ -62,7 +62,7 @@
 ├─────────────────────────────────────────────────────────────────┤
 │                        外部资源                                  │
 │  ┌─────────────────┐  ┌─────────────────────────────────────┐ │
-│  │  SFR_best.pth   │  │  utils/sfr/ (冻结的上游算法代码)      │ │
+│  │  SFR_best.pth   │  │  upstream/sfr/ (冻结的上游算法代码)    │ │
 │  │  (7.8M 参数)     │  │  ├── sfrnet.py                      │ │
 │  │                 │  │  ├── safm.py                          │ │
 │  │                 │  │  └── FRM.py                           │ │
@@ -163,7 +163,7 @@
 
 ```
 SFRNet/
-├── app/                          # 软件主体
+├── moireguard/                   # 软件主体
 │   ├── model_layer/              # 模型层
 │   │   ├── contracts.py          # 接口契约
 │   │   ├── builtin_adapter.py    # 默认实现
@@ -183,7 +183,7 @@ SFRNet/
 │       ├── widgets/
 │       └── viewmodels/
 │
-├── utils/                        # 上游代码 (冻结)
+├── upstream/                     # 上游代码 (冻结)
 │   └── sfr/
 │
 ├── configs/                      # 配置文件
@@ -198,7 +198,7 @@ SFRNet/
 
 根据设计，新增一个模型只需：
 
-1. 在 `app/model_layer/detectors/` 下新建类，实现 `forward(tile) → logits`
+1. 在 `moireguard/model_layer/detectors/` 下新建类，实现 `forward(tile) → logits`
 2. 若输入输出格式不同，另写两个 Adapter
 3. 在 `configs/models.yaml` 里加一段配置
 4. 在 `registry.py` 注册一行三元组

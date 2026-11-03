@@ -12,12 +12,12 @@
   ❌ 不知道窗体的存在
 """
 
-from app.logic_layer.inference_service import InferenceService, InferenceRequest, InferenceResult
-from app.logic_layer.sliding_window import SlidingWindowEngine
-from app.logic_layer.postprocess import PostProcessor
-from app.logic_layer.export_service import ExportService
-from app.logic_layer.config import ConfigManager
-from app.logic_layer.exceptions import MoireError, ErrorCode
+from moireguard.logic_layer.inference_service import InferenceService, InferenceRequest, InferenceResult
+from moireguard.logic_layer.sliding_window import SlidingWindowEngine
+from moireguard.logic_layer.postprocess import PostProcessor
+from moireguard.logic_layer.export_service import ExportService
+from moireguard.logic_layer.config import ConfigManager
+from moireguard.logic_layer.exceptions import MoireError, ErrorCode
 
 __all__ = [
     "InferenceService",

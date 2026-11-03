@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.sfr.FRM import FissionReorganizationModule
-from utils.sfr.safm import SAFM
+from upstream.sfr.FRM import FissionReorganizationModule
+from upstream.sfr.safm import SAFM
 
 class Stem_Block(nn.Module):
     def __init__(self, in_c, out_c, stride):

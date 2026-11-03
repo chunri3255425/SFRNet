@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from app.model_layer.contracts import DetectorCore
+    from moireguard.model_layer.contracts import DetectorCore
 
 
 class SFRNetDetector:
@@ -20,7 +20,7 @@ class SFRNetDetector:
     """
     
     def __init__(self):
-        from utils.sfr.sfrnet import build_SFR
+        from upstream.sfr.sfrnet import build_SFR
         self._model = build_SFR()
     
     def forward(self, tile: torch.Tensor) -> torch.Tensor:

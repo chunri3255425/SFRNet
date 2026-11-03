@@ -22,13 +22,13 @@ import threading
 import torch
 from PIL import Image
 
-from app.model_layer.registry import ModelRegistry
-from app.model_layer.contracts import DetectorOutput
-from app.logic_layer.config import ConfigManager
-from app.logic_layer.sliding_window import SlidingWindowEngine
-from app.logic_layer.postprocess import PostProcessor, PostProcessResult
-from app.logic_layer.export_service import ExportService, ExportOptions
-from app.logic_layer.exceptions import MoireError, ErrorCode
+from moireguard.model_layer.registry import ModelRegistry
+from moireguard.model_layer.contracts import DetectorOutput
+from moireguard.logic_layer.config import ConfigManager
+from moireguard.logic_layer.sliding_window import SlidingWindowEngine
+from moireguard.logic_layer.postprocess import PostProcessor, PostProcessResult
+from moireguard.logic_layer.export_service import ExportService, ExportOptions
+from moireguard.logic_layer.exceptions import MoireError, ErrorCode
 
 
 @dataclass
