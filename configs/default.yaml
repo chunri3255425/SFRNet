@@ -1,0 +1,22 @@
+# MoiréGuard 默认配置
+
+inference:
+  tile_size: 512
+  stride: 256
+  threshold: 0.5
+  coverage_threshold: 0.01
+  device: "auto"
+  precision: "fp32"
+  fusion: "cosine"
+  apply_morphology: false
+
+model:
+  active: "sfrnet_uhd"
+  weights_path: "assets/weights/SFR_best.pth"
+  tile_size: 512
+  stride: 256
+  device: "auto"
+  precision: "fp32"
+
+# 最大像素数限制 (1.5亿)
+max_pixels: 150000000

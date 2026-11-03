@@ -1,0 +1,12 @@
+# 模型注册清单
+
+active: sfrnet_uhd
+
+models:
+  sfrnet_uhd:
+    display_name: "SFRNet (UHD Moiré)"
+    weights_path: "assets/weights/SFR_best.pth"
+    tile_size: 512
+    stride: 256
+    device: "auto"
+    precision: "fp32"

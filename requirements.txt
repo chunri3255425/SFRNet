@@ -1,0 +1,16 @@
+# MoiréGuard 依赖清单
+# 与上游 SFRNet 科研代码的依赖保持一致
+
+torch>=2.2,<3.0
+torchvision>=0.17
+numpy>=1.24
+Pillow>=10.0
+PyYAML>=6.0
+scipy>=1.10
+
+# UI (V1)
+# PySide6>=6.6
+
+# 开发依赖
+# pyinstaller>=6.0
+# pytest>=8.0
