@@ -1,7 +1,7 @@
 # 摩尔纹视觉识别系统 — 系统架构
 
 > **仓库**：`https://github.com/chunri3255425/SFRNet.git`
-> **文档版本**：v2.1（交付形态与逻辑层细化）
+> **文档版本**：v2.2（锁定目标硬件）
 > **状态**：架构基线
 > **部署形态**：带摄像头的开发板，同时支持 Linux 与鸿蒙（OpenHarmony）双系统
 
@@ -17,30 +17,54 @@
 
 系统的全部输出就是这一个布尔量。不要求像素级掩膜、区域可视化、面积占比报表——这些是模型内部能力，不是系统对外承诺。
 
-### 1.1 交付形态：可烧录镜像
+### 1.1 目标硬件：触觉智能 Purple Pi OH2
+
+| 项 | 规格 | 对本设计的影响 |
+|---|---|---|
+| 型号 | 触觉智能（Industio）Purple Pi OH2 | 厂商提供 Linux 与 OpenHarmony 双系统支持，契合本项目双系统要求 |
+| SoC | 瑞芯微 **RK3588S**（4×A76 @2.4GHz + 4×A55 @1.8GHz） | CPU 本身也有可观算力，可作 NPU 故障时的软回退 |
+| 内存/存储 | **4 GB LPDDR4 + 64 GB eMMC** | 量化后模型与运行时占用 < 500 MB，余量充足；4 GB 内存需注意 4K 图融合缓冲（见 §6 风险 #1） |
+| NPU | **6 TOPS**（RKNN 生态，三核 NPU） | 推理后端锁定 **RKNN Runtime**；模型走 `pth → ONNX → RKNN` 转换链 |
+| 烧录 | RKDevTool / 升级固件（.img 刷机包） | 镜像构建产出 RK3588S 参数化 .img，Q6 已解 |
+| 摄像头接口 | MIPI CSI ×2（板载）+ USB | 优先 MIPI CSI 摄像头（RKISP 硬件 ISP），Linux 走 V4L2 |
+
+**推理后端决策随之收敛**：
+
+```
+开发机（x86 + PyTorch）:  TorchRuntime（已有实现）
+板端 Linux/OpenHarmony:  RknnRuntime（新增，实现 IRuntimeAdapter）
+                          └── 模型文件：SFR_best.pth → ONNX → rknn（int8 量化）
+软回退：                   OnnxRuntime CPU（NPU 驱动异常时），A55 上仍可低速运行
+```
+
+RKNN Runtime 是纯 C 库，Python 侧通过 `rknn-toolkit-lite2`（板端推理用）调用，无需在板上装 PyTorch。
+
+### 1.2 交付形态：可烧录镜像
 
 **最终交付品是一个可以直接烧录进开发板的系统镜像**，不是需要用户手动配置环境的源码包。镜像内容：
 
 | 组成 | 内容 | 说明 |
 |---|---|---|
-| 操作系统 | Linux 发行版 / OpenHarmony（按板型选择其一） | 板型确定后锁定 |
-| 运行时 | Python 解释器 + 推理后端（ONNX Runtime / NPU SDK） | 随镜像预装，不依赖联网 |
-| 应用本体 | `app/` 编译打包后的检测程序 | 上电自启动 |
-| 模型资产 | 量化后的模型文件（由 `SFR_best.pth` 转换） | 随镜像固化 |
+| 操作系统 | Linux 发行版 / OpenHarmony（Purple Pi OH2 官方镜像为基座） | 双系统各构建一条流水线 |
+| 运行时 | Python 解释器 + **rknn-toolkit-lite2**（板端 NPU 推理） | 随镜像预装，不依赖联网；板上不装 PyTorch |
+| 应用本体 | `app/` 打包后的检测程序 | 上电自启动（systemd / 系统服务） |
+| 模型资产 | 量化后的 **.rknn** 模型文件（由 `SFR_best.pth` 转换） | 随镜像固化于 `/usr/share/moireguard/models/` |
 | 配置 | `default.yaml` 烧录内置默认值 | 现场可覆盖（见 §4.3.6） |
 
 **构建流水线**（开发机执行，产出镜像）：
 
 ```
-SFR_best.pth ──导出──> ONNX ──量化──> 板端模型文件
+SFR_best.pth ──导出──> ONNX ──rknn-toolkit2（x86 开发机）──> .rknn（int8 量化）
 app/ 源码    ──打包──> 独立运行包（免依赖安装）
                 │
-                ├──> Linux：   板厂商镜像 + 根文件系统叠加（systemd 自启服务）
-                └──> OpenHarmony：镜像构建系统产物 + HAP/独立进程
+                ├──> Linux：        Purple Pi OH2 官方镜像 + 根文件系统叠加（systemd 自启服务）
+                └──> OpenHarmony：  OH 镜像构建系统产物 + HAP/独立进程
                           │
                           ▼
-                  可烧录镜像（.img / 刷机包）──烧录──> 开发板上电即跑
+                  可烧录镜像（.img，RKDevTool 刷机包）──烧录──> 开发板上电即跑
 ```
+
+注意分工：**rknn-toolkit2 装在 x86 开发机上做模型转换**；**rknn-toolkit-lite2 装在板上做推理**。两者不可装反。
 
 **验收口径**：拿到一块空白开发板 → 烧录镜像 → 接摄像头 → 上电 → 无任何手动配置 → 系统自动开始检测并输出布尔结果。这是交付测试的唯一标准。
 
@@ -50,13 +74,13 @@ app/ 源码    ──打包──> 独立运行包（免依赖安装）
 
 | 项 | 决策 | 说明 |
 |---|---|---|
-| 开发板 | **硬件待定，架构上抽象** | 具体型号后续确定；本文不绑定任何 SoC 厂商 SDK，接口层隔离 |
+| 开发板 | **触觉智能 Purple Pi OH2**（RK3588S，4GB+64GB，NPU 6 TOPS） | 板型已锁定，见 §1.1；厂商 SDK（RKNN/RKISP/刷机工具）允许进入适配层与 `build/`，仍不允许进入逻辑层与模型层 |
 | 操作系统 | **Linux 与鸿蒙双系统，同一套代码** | 系统差异全部收敛到适配层，业务代码零分支；镜像构建各自一条流水线 |
-| 开发语言 | **Python + PyTorch** | 算法与业务逻辑统一；**烧录的是转换后的板端模型**（ONNX/量化图），板端不跑 PyTorch 训练栈 |
-| 摄像头接口 | 抽象为"取帧"能力 | Linux 走 V4L2，鸿蒙走相机 Kit，上层无感知 |
+| 开发语言 | **Python + PyTorch（开发）/ RKNN Runtime（板端）** | 板端推理走 NPU，加载 int8 量化的 .rknn 模型；板上不跑 PyTorch |
+| 摄像头接口 | 抽象为"取帧"能力 | Linux 走 V4L2（MIPI CSI 经 RKISP），鸿蒙走相机 Kit，上层无感知 |
 | 上电行为 | 应用自启动 | 烧录后无需登录 shell 手动拉起 |
 
-> **关于端侧性能的现实提醒**：PyTorch 模型（7,799,872 参数）无法直接在多数嵌入式开发板的 CPU 上实时运行。因此镜像内固化的是**量化后的模型**，由适配层的推理后端接口加载执行，见 §4.3。
+> **关于端侧性能的现实预估**：SFRNet 共 7,799,872 参数，单块 512×512 前向约 1.5 GFLOPs。RK3588S NPU（6 TOPS，int8）单块推理预估 **5–20 ms**（NPU 利用率按 30–70% 估）；一张 4K 图按 tile 512 / stride 256 切 112 块，纯前向约 0.6–2.2 s。**该数值是纸面推算，M1 阶段必须在实板上实测标定**，实测结果回填到 `configs/default.yaml` 的超时参数中。若 4K 全图不可接受，方案是加大 stride 或先降采样（记录进 `InputMeta.scale_x/y`）。
 
 ---
 
@@ -180,12 +204,18 @@ class IDeviceIO(ABC):
 
 | 能力 | Linux 实现 | 鸿蒙实现 |
 |---|---|---|
-| 取帧 | `V4L2CameraAdapter`（`/dev/video*`） | `OhosCameraAdapter`（相机 Kit / NAPI） |
-| 推理 | `OnnxRuntime`（部署）/ `TorchRuntime`（开发） | 同上，或厂商 NPU 后端 |
+| 取帧 | `V4L2CameraAdapter`（`/dev/video*`，MIPI CSI 经 RKISP 驱动） | `OhosCameraAdapter`（相机 Kit / NAPI） |
+| 推理 | `RknnRuntime`（rknn-toolkit-lite2 + NPU）/ `TorchRuntime`（开发机） | 同左（OH 版 Purple Pi OH2 同样暴露 RKNN Runtime） |
 | 配置路径 | `/etc/moireguard/`（镜像内置）+ `/var/lib/moireguard/`（现场覆盖） | 应用沙箱 `filesDir` |
 | 日志 | `/var/log/moireguard/`（logrotate 滚动） | 应用沙箱 `cacheDir/logs/` |
 | 自启动 | systemd 服务单元 | 系统服务 / ArkTS 壳拉起 |
-| 布尔指示 | GPIO sysfs / 串口 / LED | GPIO NAPI / 屏幕 |
+| 布尔指示 | GPIO sysfs / 串口 / LED（板载 40-pin 排针可用） | GPIO NAPI / 屏幕 |
+
+**RknnRuntime 的三个实现要点**（新增时按此执行）：
+
+1. **输入布局**：RKNN 模型固定吃 `NHWC` uint8/float，与契约 C1（`NCHW` float32）不一致——转换放在 RknnRuntime 内部（`infer` 里做 permute + 量化 Scale 变换），**不改动 IInputAdapter**，契约 C1–C5 仍然成立。
+2. **输出域**：.rknn 导出时**不加** sigmoid/激活后处理，保证 `infer` 返回的仍是 raw logits（契约 O1）。RKNN 转换参数里显式关掉 `reorder` 之外的自动后处理。
+3. **量化校准集**：`build/export_model.py` 需提供 100–200 张真实屏摄图作校准集（不能只用合成图，见 §6 风险 #7），量化后逐块比对 logits，相对误差 > 5% 则降位宽或回退 fp16 的 .rknn。
 
 ### 4.2 模型层（两个预留接口）
 
@@ -493,12 +523,13 @@ SFRNet/
 │       └── exceptions.py       # 错误分类与恢复策略映射
 │
 ├── build/                      # ★ 镜像构建流水线（产出可烧录镜像）
-│   ├── export_model.py         # SFR_best.pth → ONNX → 量化模型
+│   ├── export_model.py         # SFR_best.pth → ONNX → .rknn（int8 量化 + 校准 + 一致性比对）
 │   ├── package_app.py          # app/ → 免依赖独立运行包
-│   ├── image_linux/            # Linux 镜像叠加层 + systemd 单元
-│   └── image_ohos/             # OpenHarmony 镜像集成 + HAP/进程配置
+│   ├── image_linux/            # Purple Pi OH2 Linux 镜像叠加层 + systemd 单元
+│   ├── image_ohos/             # OpenHarmony 镜像集成 + HAP/进程配置
+│   └── calib/                  # RKNN 量化校准集（100–200 张真实屏摄图）
 │
-├── configs/default.yaml        # 镜像内置默认配置
+├── configs/default.yaml        # 镜像内置默认配置（超时参数待 M1 实测回填）
 └── tests/
 ```
 
@@ -510,13 +541,13 @@ SFRNet/
 
 | # | 事项 | 影响 | 应对 |
 |---|---|---|---|
-| 1 | 板端算力未知 | 量化后模型仍可能跑不到目标帧率 | `IRuntimeAdapter` 预留多后端；`build/export_model.py` 支持多档量化位宽 |
-| 2 | 开发板未定 | 摄像头驱动、NPU SDK、镜像构建方式均未定 | `ICameraAdapter` 隔离；`build/` 按板型各建一条流水线 |
+| 1 | 4 GB 内存与 4K 图融合缓冲 | 3840×2160 三张 float32 融合缓冲约 95 MB，加上多块推理的中间张量，峰值可控但无浪费空间 | 融合缓冲复用（SlidingFuser 预分配）；禁止同帧持有两份全图张量；4K 以上输入按 `max_pixels` 拦截 |
+| 2 | RKNN 对 ONNX 算子覆盖不全 | SFRNet 中的自定义注意力（SAFM/FRM）可能含 RKNN 不支持的算子，转换失败 | 导出脚本先跑 ONNX 全图数值比对，再转 RKNN；不支持的算子拆为 CPU 子图（RKNN 支持 NPU/CPU 混合），实在不行该块回退 OnnxRuntime |
 | 3 | 双系统同一套代码 | 需保证业务代码零平台分支 | 平台判断只允许出现在 `adaptation/factory.py` 一处 |
 | 4 | 鸿蒙 Python 运行时可用性 | 鸿蒙上跑 CPython 生态支持有限 | 备选：Python 独立进程 + IPC，由 ArkTS 壳展示结果；此路径下逻辑层代码完全复用 |
 | 5 | 上游模型无 Sigmoid 末端 | 输出是 logits 而非概率 | 契约 O1 保证下游统一施加 |
 | 6 | 上游 `predict.py` 小图推理崩溃（画布未随 pad 扩大） | 直接搬用会崩 | 逻辑层滑窗自行处理填充与裁剪，不复用该脚本 |
-| 7 | 量化对精度的影响 | 摩尔纹多为高频细密纹理，量化敏感度未知 | 导出脚本内建"量化前后 logits 一致性比对"，超阈值降位宽或回退 fp16 |
+| 7 | 量化对精度的影响 | 摩尔纹多为高频细密纹理，int8 量化敏感度未知，且校准集若用合成图会引入分布偏移（实测：模型对合成图输出近乎饱和，无区分力） | 校准集必须用真实屏摄图；导出脚本内建"量化前后 logits 一致性比对"，相对误差 > 5% 降位宽或回退 fp16 |
 | 8 | 无人值守长期运行 | 内存泄漏 / 日志撑满存储 | 每帧释放中间张量；日志滚动（适配层负责）；Supervisor 周期性自检 |
 
 ---
@@ -525,12 +556,14 @@ SFRNet/
 
 | # | 开放项 | 影响范围 |
 |---|---|---|
-| Q1 | 开发板具体型号与算力 | 决定推理后端、量化档位、镜像构建方式 |
-| Q2 | 摄像头分辨率与取帧帧率 | 决定是否必须滑窗、单帧延迟预算 |
-| Q3 | 检测频率（连续全速 / 定周期） | 决定 `run_forever` 触发间隔参数 |
-| Q4 | 布尔结果的物理呈现方式（GPIO / LED / 屏幕 / 串口） | 决定 `IDeviceIO.indicate` 各板型实现 |
+| ~~Q1~~ | ~~开发板具体型号与算力~~ **已定**：Purple Pi OH2（RK3588S，4+64G，NPU 6 TOPS） | 已解：后端锁定 RKNN，烧录走 RKDevTool .img |
+| Q2 | 摄像头选型（MIPI CSI 还是 USB）与分辨率、帧率 | 决定是否必须滑窗、单帧延迟预算；板载 MIPI 走 RKISP 是首选 |
+| Q3 | 检测频率（连续全速 / 定周期 / 变化触发） | 决定 `run_forever` 触发间隔参数 |
+| Q4 | 布尔结果的物理呈现方式（板载 40-pin GPIO / LED / 屏幕 / 串口） | 决定 `IDeviceIO.indicate` 各系统实现 |
 | Q5 | `pixel_ratio` 与 `threshold` 的取值 | 需用真实场景样本标定 |
-| Q6 | 镜像的烧录格式（dd 镜像 / 厂商刷机包） | 板型确定后随其 SDK 确定 |
+| ~~Q6~~ | ~~镜像的烧录格式~~ **已定**：RK3588S .img 刷机包（RKDevTool / 升级固件） | 已解：`build/` 产出参数化 .img |
+| Q7 | SFRNet 自定义算子在 RKNN 上的可转换性 | **新增，优先级最高**：决定模型能否上 NPU；M1 阶段第一件事就是跑通转换链 |
+| Q8 | RKNN 量化校准集的来源（需真实屏摄图 100–200 张） | 新增：决定 int8 量化可行性；可从 UHDMD 数据集抽样 |
 
 ---
 
