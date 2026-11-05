@@ -191,6 +191,7 @@ class DetectionEngine:
                      f"frame={result.frame_id} has_moire={int(result.has_moire)} "
                      f"coverage={result.coverage:.6f} tiles={result.tiles} "
                      f"total_ms={result.elapsed_ms:.0f}")
+        self.state = "READY"        # 恢复状态机（否则下一帧入口检查必然 busy）
         return result
 
     # ── 错误恢复（SDD §4.3.5 / CONTROL_LOGIC §6）──
