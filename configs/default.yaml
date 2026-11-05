@@ -20,3 +20,12 @@ model:
 
 # 最大像素数限制 (1.5亿)
 max_pixels: 150000000
+
+relay:
+  enabled: false        # 画面回传默认关闭（SDD 4.5.2 R7）
+  host: "192.168.1.100"
+  port: 9000
+  interval_frames: 6
+  jpeg_quality: 75
+  downscale: 1080
+  overlay_result: true
