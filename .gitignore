@@ -32,9 +32,17 @@ env/
 *.swo
 *~
 
-# 检查点
+# 检查点与模型权重
 checkpoints/
+weights/*
+assets/weights/*
 *.pth
+*.pt
+*.onnx
+*.safetensors
+# 但保留权重目录结构占位
+!assets/weights/.gitkeep
+!weights/.gitkeep
 
 # 数据目录
 data/
@@ -55,3 +63,9 @@ htmlcov/
 # 导出目录
 output/
 exports/
+
+# 缓存
+.cache/
+*.cache
+torch_save_tb/
+runs/
