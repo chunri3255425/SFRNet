@@ -43,11 +43,14 @@ def export_onnx(weights: str, out: str) -> int:
         state = state["state_dict"]
     core.load_state_dict(state, strict=True)
     core.eval()
+    # SFRNetDetector 是包装类，真正的 nn.Module 在 _model 里（torch.onnx.export 需要 nn.Module）
+    net = core._model if hasattr(core, "_model") else core
+    net.eval()
 
     dummy = torch.randn(1, 3, IN_SIZE, IN_SIZE)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
-        core, dummy, out,
+        net, dummy, out,
         input_names=["input"], output_names=["logits"],
         opset_version=17, dynamo=False,
     )
@@ -57,7 +60,7 @@ def export_onnx(weights: str, out: str) -> int:
     try:
         import onnxruntime as ort
         sess = ort.InferenceSession(out, providers=["CPUExecutionProvider"])
-        ref = core(dummy).detach().numpy()
+        ref = net(dummy).detach().numpy()
         got = sess.run(None, {"input": dummy.numpy()})[0]
         rel = np.abs(ref - got).max() / (np.abs(ref).max() + 1e-9)
         print(f"[onnx] 数值一致性 最大相对误差 = {rel:.2e} "
