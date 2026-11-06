@@ -4,7 +4,8 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+!build/
+build/**/__pycache__/
 develop-eggs/
 dist/
 downloads/
@@ -73,3 +74,7 @@ exports/
 *.cache
 torch_save_tb/
 runs/
+# ---- build 产物（不入库） ----
+build/models/
+build/dist/
+build/calib/*.jpg

@@ -1,0 +1,29 @@
+# MoiréGuard 板端常驻服务（systemd 单元）
+# 上电自启；断电安全（系统无持久状态，冷启动即可恢复）
+
+[Unit]
+Description=MoireGuard moire pattern detection service
+After=network.target
+# RKISP 摄像头驱动与 NPU 设备就绪后再拉起
+After=multi-user.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/moireguard
+ExecStart=/usr/bin/python3 -m app.main
+Restart=on-failure
+RestartSec=3
+# 崩溃自动拉回；FATAL 状态由应用自身退出（退出码 1）交由 systemd 决策
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# 日志交由 journald，同时应用自身写 /var/log/moireguard/（logrotate 滚动）
+StandardOutput=journal
+StandardError=journal
+
+# 优雅退出：SIGTERM 走 engine.shutdown()（停收新帧 → 释放资源 → 退出码 0）
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 # 摩尔纹视觉识别系统 — 系统架构
 
 > **仓库**：`https://github.com/chunri3255425/SFRNet.git`
-> **文档版本**：v2.2（锁定目标硬件）
+> **文档版本**：v2.3（锁定摄像头 IMX415；新增 SSH 运维通道与 WiFi 画面回传）
 > **状态**：架构基线
 > **部署形态**：带摄像头的开发板，同时支持 Linux 与鸿蒙（OpenHarmony）双系统
 
@@ -31,6 +31,7 @@
 | 网络 | **双千兆网口**（商品主图标注） | 硬件上具备"一路进产线网、一路点对点接巡检机"的隔离条件。⚠️ 但本文 §1 与 §4.4 对外的承诺仍然只有一个布尔量，输出走 `IDeviceIO.indicate`；HTTP/SSE 出口是本轮代码新增能力（`adaptation/network/`，配置默认 `enabled: false`），**尚未在本文立项**，是否升为正式输出通道待 Q4 一并定夺 |
 | 烧录 | RKDevTool / 升级固件（.img 刷机包） | 镜像构建产出 RK3576 参数化 .img，Q6 已解 |
 | 摄像头接口 | MIPI CSI ×2（板载）+ USB；ISP 为 RKISP V3.9（16M pixel、HDR 120dB，与主图"16M ISP"一致） | 优先 MIPI CSI 摄像头（RKISP 硬件 ISP），Linux 走 V4L2。**已随板购入 IMX415 模组**（订单含"Purple Pi OH2 + IMX415 摄像头"），即 8MP/4K 级 MIPI CSI-2 传感器，Q2 的接口之争基本落定 |
+| **摄像头型号（已定）** | **Sony IMX415**（MIPI CSI-2 接口，经板载 RKISP） | 1/2.8" STARVIS，8.46 MP，最高 3840×2160@30fps —— 传感器原生分辨率与模型 4K 基准（UHDMD）一致，滑窗参数（tile 512 / stride 256）无需调整；低照灵敏度高，适配现场光照不均的屏摄场景。Linux 下经 RKISP 驱动暴露 `/dev/video*`，V4L2 取帧即可，**无需新增驱动层抽象**（Q2 已解） |
 
 **推理后端决策随之收敛**：
 
@@ -83,6 +84,8 @@ app/ 源码    ──打包──> 独立运行包（免依赖安装）
 | 开发语言 | **Python + PyTorch（开发）/ RKNN Runtime（板端）** | 板端推理走 NPU，加载 int8 量化的 .rknn 模型；板上不跑 PyTorch |
 | 摄像头接口 | 抽象为"取帧"能力 | Linux 走 V4L2（MIPI CSI 经 RKISP），鸿蒙走相机 Kit，上层无感知 |
 | 上电行为 | 应用自启动 | 烧录后无需登录 shell 手动拉起 |
+| 远程运维 | **SSH 连接开发板** | 开发与运维统一走 SSH：部署/更新配置用 `scp`，查日志、重启服务、故障排查走 `ssh`；SSH 仅是**运维控制面**，不进检测数据面（检测链路不依赖网络可达） |
+| 画面回传 | **WiFi 传输画面到上位机** | 板端通过 WiFi 将采集帧（可选叠加判定结果）实时回传给开发/演示主机，便于远程观察现场画面；属**旁路诊断面**，可关闭、失败不致命，见 §4.5 |
 
 > **关于端侧性能的现实预估**（2026-11-05 开发机实测后重写；本文早期推算已被实测证伪）
 >
@@ -223,6 +226,8 @@ class IDeviceIO(ABC):
 | 日志 | `/var/log/moireguard/`（logrotate 滚动） | 应用沙箱 `cacheDir/logs/` |
 | 自启动 | systemd 服务单元 | 系统服务 / ArkTS 壳拉起 |
 | 布尔指示 | GPIO sysfs / 串口 / LED（板载 40-pin 排针可用） | GPIO NAPI / 屏幕 |
+| 远程运维 | OpenSSH 服务（镜像内置，`systemd` 拉起，固定静态 IP 或 mDNS 发现） | OH 端用 sftp/hdc 替代，运维动作收敛到 `IDeviceIO` |
+| 画面回传 | `WifiFrameRelay`（TCP socket，JPEG 压缩，见 §4.5） | 同左（OH 侧经 WiFi NAPI 连接） |
 
 **RknnRuntime 的三个实现要点**（新增时按此执行）：
 
@@ -502,51 +507,141 @@ class DetectionEngine:
 
 不产出图片文件、不产出报告、不建结果数据库。
 
+### 4.5 旁路能力：SSH 运维通道与 WiFi 画面回传
+
+两者都属**旁路诊断面**——不参与检测判定链路，检测链路在完全断网时必须照常工作。
+
+#### 4.5.1 SSH 运维通道
+
+| 项 | 约定 |
+|---|---|
+| 定位 | 开发与运维的控制面：部署模型/配置（`scp`）、查日志与状态（`ssh`）、重启服务（`systemctl restart moireguard`） |
+| 数据面隔离 | 检测循环**不依赖 SSH 可达**；SSH 断开时系统照常检测 |
+| 镜像内置 | OpenSSH server 随镜像固化，systemd 自启；首次开机生成主机密钥 |
+| 网络发现 | 有线/WiFi 环境下用静态 IP 或 mDNS（`moireguard-<serial>.local`）定位板子，免除每次查 IP |
+| 约束 | 镜像内置默认口令仅在首次登录时强制修改；禁止把运维凭据写进代码仓库 |
+
+#### 4.5.2 WiFi 画面回传（`IFrameRelay`）
+
+**定位**：把板端采集的画面实时传给开发/演示主机，用于远程观察现场（调试取景、远程演示、采集数据抽查）。它是**旁路**，失败只降级告警，绝不阻塞检测。
+
+**适配层接口**（新增第四个抽象，实现仍收敛在适配层）：
+
+```python
+class IFrameRelay(ABC):
+    """把一帧画面经 WiFi 推给上位机。旁路能力：失败不致命。"""
+
+    @abstractmethod
+    def start(self, host: str, port: int, **kwargs) -> None: ...
+
+    @abstractmethod
+    def push(self, frame: "Frame",
+             result: "DetectionResult | None" = None) -> bool:
+        """非阻塞推送一帧。返回 False 表示本轮未发出（队列满/未连接）。"""
+
+    @abstractmethod
+    def stop(self) -> None: ...
+```
+
+**数据通路**：
+
+```
+DetectionService ──取帧成功后旁路挂接──> StreamTap（逻辑层，可配置开关）
+    → JPEG 编码（板端 CPU，质量 60–80，4K 帧约 100–300 KB）
+    → WifiFrameRelay.push()（独立发送线程 + 长度为 1 的队列）
+    → TCP: host:port ──WiFi──> 上位机查看器（PC 端小工具，播放 + 显示 has_moire 角标）
+```
+
+**关键规则**：
+
+| # | 规则 | 理由 |
+|---|---|---|
+| R1 | **丢新不堵旧**：发送队列长度恒为 1，新帧到来覆盖旧帧（与取帧的 `drop_policy="latest"` 同一取舍） | 带宽不够时宁可降帧率，不能让检测循环等待网络 |
+| R2 | **push() 非阻塞**，总耗时预算 ≤ 5 ms（入队即返回，编码与发送都在独立线程） | 画面回传不得挤占单帧检测的耗时预算（§4.3.3） |
+| R3 | **降帧率回传**：默认按固定间隔回传（如 5 fps 或每 N 帧一帧），而非全帧率 | 4K@30fps 原图回传需 >100 Mbps，现场 WiFi 扛不住；JPEG 压缩后 5 fps 约 1–2 Mbps，普通 WiFi 可行 |
+| R4 | **可叠加判定结果**：编码前把 `has_moire`/coverage 以角标文字画进画面（可选开关） | 上位机无需解析第二通道即可看到结论 |
+| R5 | **失败降级**：连接断开/发送超时 → 重连退避（2s 固定），连续 5 次失败 → 记 WARN + 状态转 DEGRADED 附带警告标记，**不 FATAL** | 旁路坏了主业务必须活着 |
+| R6 | **分辨率可降**：回传前可下采样（如长边 1080），不影响板端检测用原图 | 进一步压缩带宽；检测与回传的分辨率解耦 |
+| R7 | **默认关闭**：`relay.enabled: false` 为镜像默认值，现场用覆盖文件或 SSH 热配置打开 | 上电即跑的验收场景（§1.2）不应依赖网络 |
+
+**配置项**（并入 `configs/default.yaml`）：
+
+```yaml
+relay:
+  enabled: false        # 默认关闭（R7）
+  host: "192.168.1.100" # 上位机地址
+  port: 9000
+  interval_frames: 6    # 每 6 帧回传 1 帧（≈5fps @30fps）
+  jpeg_quality: 75
+  downscale: 1080       # 长边降采样，0 = 原分辨率
+  overlay_result: true  # 画面叠加 has_moire 角标
+```
+
+**为什么独立线程 + 单槽队列而不是 RTSP/网络流**：RTSP 服务端在板端引入额外依赖与配置成本，且本项目回传的是"观察用低帧率画面"而非"实时视频流"，一条 TCP 长连接 + JPEG 帧序列（自定义 4 字节长度前缀分包）即可满足，上位机用任何语言 20 行可写接收端。若后续确需标准流媒体，仅需在适配层新增 `RtspRelay(IFrameRelay)` 实现，逻辑层零改动。
+
 ---
 
 ## 5. 目录结构
 
 ```
 SFRNet/
-├── utils/sfr/                  # 上游模型定义（冻结，不改）
+├── upstream/sfr/               # 上游模型定义（冻结，不改）
 │   └── {sfrnet,safm,FRM}.py
-├── assets/weights/             # SFR_best.pth（板端模型的转换源）
+├── upstream/                   # + data_loding.py / metrics.py（训练侧，产品路径不调用）
+├── assets/weights/             # SFR_best.pth（板端模型的转换源，不入库）
+├── samples/                    # 屏摄样张与对照实验图（本地调试用，不入库）
 │
-├── app/
-│   ├── main.py                 # 入口：bootstrap → run_forever / detect_once
-│   │
-│   ├── adaptation/             # ── 适配层
-│   │   ├── camera/{base,v4l2,ohos}.py
-│   │   ├── runtime/{base,onnx_runtime,torch_runtime}.py
-│   │   ├── device_io/{base,linux_io,ohos_io}.py
-│   │   └── factory.py          # ★ 平台探测与实现装配（唯一允许平台分支处）
-│   │
+├── app/                        # ★ 软件主体（唯一包，历史 moireguard/ 双真源已消除）
+│   ├── main.py                 # ★ 唯一组合根：装配 + 四种形态（常驻循环 / --detect /
+│   │                           #   --serve-net / --selftest），平台分支只经 factory 一次
+│   ├── adaptation/             # ── 适配层（对上层零感知，不得 import logic_layer）
+│   │   ├── base.py             # ★ 抽象聚合 + DTO + 反向注入用 Protocol（IImageService 等）
+│   │   ├── factory.py          # ★ 平台探测与实现装配（唯一允许平台分支处；缺能力显式报错）
+│   │   ├── camera/{base,v4l2,ohos,fake,file_camera}.py
+│   │   ├── runtime/{base,onnx_runtime,torch_runtime,rknn_runtime}.py
+│   │   ├── relay/{base,wifi_frame_relay}.py   # WiFi 画面回传（旁路，见 §4.5）
+│   │   ├── network/http_server.py             # HTTP/SSE 网络出口（代码先行，见 §4.4 待 Q4）
+│   │   └── device_io/{base,linux_io}.py       # ohos_io 未落地（见下表缺口）
 │   ├── model_layer/            # ── 模型层
 │   │   ├── contracts.py        # ★ 两个预留接口 + 数据契约
 │   │   ├── builtin_adapter.py  # 默认实现（RGB 输入 / 单通道输出）
-│   │   ├── registry.py         # ModelRegistry
-│   │   └── detectors/sfrnet.py # MoiréClassifier 实现
-│   │
-│   └── logic_layer/            # ── 逻辑层
-│       ├── engine.py           # DetectionEngine（状态机主体）
-│       ├── bootstrapper.py     # 启动序列
-│       ├── decider.py          # 双门限判定
-│       ├── supervisor.py       # 错误恢复与降级
-│       ├── sliding_window.py   # 切块与融合
+│   │   ├── registry.py         # ModelRegistry（strict：未知 model_id / 缺权重即抛）
+│   │   └── detectors/sfrnet_detector.py       # DetectorCore 实现
+│   └── logic_layer/            # ── 逻辑层（不 import 平台 SDK / 不碰 state_dict / 不做平台判断）
+│       ├── engine.py           # DetectionEngine（状态机 + 逐帧 + 重试降级，无独立 supervisor）
+│       ├── bootstrapper.py     # 7 步启动序列（DEFAULTS 由 config.AppConfig 导出）
+│       ├── config.py           # ★ 默认值唯一真源（dataclass）+ 分层 merge
+│       ├── decider.py          # 双门限判定（全流程唯一一次 sigmoid）
+│       ├── sliding_window.py   # 切块与余弦窗融合
+│       ├── postprocess.py      # 开发/标定侧后处理（与 Decider 同界同判）
+│       ├── inference_service.py# 单次推理编排（图片路径 → 结果，供网络出口调用）
+│       ├── export_service.py   # 掩膜/热力图/JSON 导出
 │       └── exceptions.py       # 错误分类与恢复策略映射
 │
-├── build/                      # ★ 镜像构建流水线（产出可烧录镜像）
-│   ├── export_model.py         # SFR_best.pth → ONNX → .rknn（int8 量化 + 校准 + 一致性比对）
-│   ├── package_app.py          # app/ → 免依赖独立运行包
-│   ├── image_linux/            # Purple Pi OH2 Linux 镜像叠加层 + systemd 单元
-│   ├── image_ohos/             # OpenHarmony 镜像集成 + HAP/进程配置
-│   └── calib/                  # RKNN 量化校准集（100–200 张真实屏摄图）
+├── build/                      # 镜像构建流水线
+│   ├── export_model.py         # SFR_best.pth → ONNX → .rknn（int8 量化 + 一致性比对）
+│   ├── package_app.py          # app/ → 分层 stage 打包（/opt /etc /usr /var + systemd）
+│   ├── image_linux/moireguard.service
+│   └── tools/view_relay.py     # 上位机画面查看器
 │
-├── configs/default.yaml        # 镜像内置默认配置（超时参数待 M1 实测回填）
-└── tests/
+├── configs/{default.yaml,models.yaml}   # 镜像内置默认配置（超时待 M1 实测回填）
+├── {train,predict}.py          # 上游训练/预测脚本（研究侧，不进镜像）
+├── run_sim.py                  # 开发机模拟器：FileCamera 接进 DetectionEngine
+├── serve.py                    # 兼容壳 → app.main（不再承接新逻辑）
+└── tests/{smoke_board_pipeline,test_real_weights}.py
 ```
 
-**引用约束**：`utils.*` 只允许在 `app/model_layer/detectors/sfrnet.py` 中 import 一次；`v4l2`、`ohos`、`onnx` 等平台字样只允许出现在 `app/adaptation/` 与 `build/` 之下。
+**引用约束**：`upstream.*` 只允许在 `app/model_layer/detectors/sfrnet_detector.py` 中 import 一次；`v4l2`、`ohos`、`onnx`、`rknn` 等平台字样只允许出现在 `app/adaptation/` 与 `build/` 之下；**适配层不得 import 逻辑层**（依赖方向只能是 逻辑层 → 模型层 → 适配层），跨层反向调用一律走 `adaptation/base.py` 里的 Protocol 由组合根注入。
+
+**目录树与本文的已知缺口**（代码先行、文档尚未立项的部分，不粉饰）：
+
+| 本文声称 | 实际状态 |
+|---|---|
+| `device_io/ohos_io.py` | 未落地，鸿蒙侧仅有 `camera/ohos.py` 占位 |
+| `build/image_ohos/`、`build/calib/` | 目录不存在；鸿蒙流水线与 RKNN 量化校准集待 M1 |
+| `logic_layer/supervisor.py` | 无此文件，重试与降级已并入 `engine.py`（C-10~C-13） |
+| 网络出口（`adaptation/network/`） | 代码已可用（HTTP/SSE + token 鉴权），但 §1/§4.4 对外的正式承诺仍只有一个布尔量，是否升为正式输出通道待 Q4 |
+| 默认阈值 `threshold=0.5 / coverage_threshold=0.01` | **实测对任何输入都判有摩尔纹**（零内容图 coverage=1.0000），Q5/Q9 未解前不可作交付判据 |
 
 ---
 
@@ -562,6 +657,7 @@ SFRNet/
 | 6 | 上游 `predict.py` 小图推理崩溃（画布未随 pad 扩大） | 直接搬用会崩 | 逻辑层滑窗自行处理填充与裁剪，不复用该脚本 |
 | 7 | 量化对精度的影响 | 摩尔纹多为高频细密纹理，int8 量化敏感度未知，且校准集若用合成图会引入分布偏移（实测：模型对合成图输出近乎饱和，无区分力） | 校准集必须用真实屏摄图；导出脚本内建"量化前后 logits 一致性比对"，相对误差 > 5% 降位宽或回退 fp16 |
 | 8 | 无人值守长期运行 | 内存泄漏 / 日志撑满存储 | 每帧释放中间张量；日志滚动（适配层负责）；Supervisor 周期性自检 |
+| 9 | WiFi 画面回传挤占检测资源或网络不稳 | 旁路故障干扰主业务 | 回传走独立线程 + 单槽队列（R1/R2），失败固定退避重连、连续 5 次仅 DEGRADED 告警（R5）；默认关闭（R7） |
 
 ---
 

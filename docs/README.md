@@ -13,15 +13,13 @@ docs/
 ├── SFRNet大创创意方向方案.md   # 大创应用落地方案
 │
 ├── design/                   # 设计文档
-│   ├── SOFTWARE_DESIGN.md    # 软件设计文档 (SDD) - 核心契约
+│   ├── SOFTWARE_DESIGN.md    # 软件设计文档 (SDD v2.3) - 核心契约 + 唯一目录树
+│   ├── CONTROL_LOGIC.md      # 控制逻辑可执行规格 (13 条判定规则)
 │   └── TECHNICAL_DOC.md      # 技术文档 (含源码核验与实测)
 │
-├── api/                      # API 文档 (待补充)
+├── api/README.md             # API 索引 (正文待补充)
 │
-├── guides/                   # 使用指南 (待补充)
-│   ├── INSTALL.md            # 安装指南
-│   ├── QUICKSTART.md         # 快速开始
-│   └── DEPLOYMENT.md         # 部署指南
+├── guides/README.md          # 使用指南占位 (INSTALL/QUICKSTART/DEPLOYMENT 尚未撰写)
 │
 └── archive/                  # 归档文档
     └── CHANGELOG.md          # 变更日志
@@ -36,6 +34,7 @@ docs/
 | 文档                                           | 说明                                                                     | 读者      |
 | ---------------------------------------------- | ------------------------------------------------------------------------ | --------- |
 | [SOFTWARE_DESIGN.md](design/SOFTWARE_DESIGN.md) | **软件设计文档 (SDD)**定义三层架构、两个预留接口、数据契约、错误码 | 全体开发  |
+| [CONTROL_LOGIC.md](design/CONTROL_LOGIC.md)     | **控制逻辑可执行规格**13 条判定规则，逐条标 `[实测]/[代码]/[设计]` | 全体开发  |
 | [TECHNICAL_DOC.md](design/TECHNICAL_DOC.md)     | **技术文档**含源码行级核验、实机实测数据、缺陷清单                 | 算法/开发 |
 
 ### 应用方案
@@ -51,13 +50,16 @@ docs/
 ### 我想了解...
 
 **软件整体架构**
-→ 阅读 [ARCHITECTURE.md](ARCHITECTURE.md)
+→ 阅读 [ARCHITECTURE.md](ARCHITECTURE.md)（⚠️ 桌面端旧版，已被 v2.3 取代，看头部差异表）
+
+**镜像构建与模型转换**
+→ 阅读 [../build/README.md](../build/README.md)
 
 **模型层接口设计**
-→ 阅读 [SOFTWARE_DESIGN.md §5](design/SOFTWARE_DESIGN.md) 两个预留接口
+→ 阅读 [SOFTWARE_DESIGN.md §4.2](design/SOFTWARE_DESIGN.md) 两个预留接口
 
 **推理流程细节**
-→ 阅读 [SOFTWARE_DESIGN.md §6](design/SOFTWARE_DESIGN.md) 逻辑层设计
+→ 阅读 [SOFTWARE_DESIGN.md §4.3](design/SOFTWARE_DESIGN.md) 逻辑层设计
 
 **上游代码问题**
 → 阅读 [TECHNICAL_DOC.md](design/TECHNICAL_DOC.md) 缺陷清单
@@ -92,4 +94,4 @@ docs/
 
 ---
 
-*最后更新: 2026-11-03*
+*最后更新: 2026-11-06（合并远端 app/ 体系后统一校正章节指针与文件清单）*

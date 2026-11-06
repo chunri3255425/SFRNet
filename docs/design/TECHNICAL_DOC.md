@@ -6,7 +6,7 @@
 > 分析对象：`https://github.com/chunri3255425/SFRNet.git` @ `51f4057`（branch `main`，含 11 个文件，51 MB）
 > 撰写依据（三重交叉验证）：
 > ① **论文原文**——`SFRNet--Ultra-high-definition-moir--pattern-_2027_Expert-Systems-with-Applic.pdf`（12 页，全文文本已逐页解析）＋`SFRNet论文中文翻译.docx`；
-> ② **源码级通读**——`train.py` / `predict.py` / `utils/data_loding.py` / `utils/metrics.py` / `utils/sfr/{sfrnet,safm,FRM}.py` 共 979 行；
+> ② **源码级通读**——`train.py` / `predict.py` / `upstream/data_loding.py` / `upstream/metrics.py` / `upstream/sfr/{sfrnet,safm,FRM}.py` 共 979 行；
 > ③ **实机验证**——加载 `SFR_best.pth` 于 PyTorch 2.12.0 执行前向 hook、反向梯度探针、算子级 MACs 累加、参数去重统计。
 >
 > **凡标「实测」的数值均为本机运行结果；凡标「论文」的数值均引自上述 PDF。二者不一致处已在 §6.5、§8.6 显式列出，不做调和性修饰。**
@@ -574,8 +574,8 @@ forward: g_feat(上采样对齐) + x_feat → gc_conv → attn ; return x * attn
 
 | 定义位置 | 语义 | 作用域 | 输入参数 |
 |---|---|---|---|
-| `utils/sfr/safm.py:52` | **通道**注意力（SE 变体：GAP → 1×1×3 → Split → 逐通道门控） | SAFM 内部 | `(x0, x2, x4)` 三路多尺度特征 |
-| `utils/sfr/sfrnet.py:65` | **空间**注意力门（Attention Gate） | 解码器跳线 | `(g, x)` 门控/跳过特征 |
+| `upstream/sfr/safm.py:52` | **通道**注意力（SE 变体：GAP → 1×1×3 → Split → 逐通道门控） | SAFM 内部 | `(x0, x2, x4)` 三路多尺度特征 |
+| `upstream/sfr/sfrnet.py:65` | **空间**注意力门（Attention Gate） | 解码器跳线 | `(g, x)` 门控/跳过特征 |
 
 二者不可互换，也不存在继承关系。阅读与二次开发时须按 import 路径区分。
 
@@ -705,7 +705,7 @@ $$\mathcal{L}_{total} = \lambda\cdot\mathcal{L}_{BCE} + (1-\lambda)\cdot\mathcal
 
 这一点值得与论文对照：论文宣称 FRM 用于捕获 "fine-grained local frequency anomalies" `[论文 §3.1]`，但架构层面其输出在融合前就被降到了与编码器瓶颈相同的 H/8 尺度。**"局部细粒度感知"的优势能否传递到最终掩膜，取决于这一步插值是否构成信息瓶颈**。论文的组件消融数据与该观察方向一致——单独加 FRM 时 IoU 仅从 60.29% 提升到 60.55%（+0.26%），低于单独加 SAFM 的 +0.38%，远低于二者组合的 +1.61% `[论文 Table 4]`。建议后续工作尝试在解码器的多个尺度层级注入 $f_2$ 特征，而非仅在 H/8 单点注入。
 
-### 5.4 数据管道实现 `utils/data_loding.py`
+### 5.4 数据管道实现 `upstream/data_loding.py`
 
 ```python
 MoireTargetDataset(root_dir, is_train=True, crop_size=256, crop_type='center', transform=None)

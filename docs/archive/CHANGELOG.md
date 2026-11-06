@@ -6,6 +6,51 @@
 
 ---
 
+## [Unreleased] - 2026-11-06（合并 origin/main 的 `app/` 体系）
+
+本地 ahead 1 / 远端 behind 4，双方各自实现了同一批抽象。合并策略：**以远端 `app/` 骨架为主干**（它符合 SDD §5 且有状态机与冒烟测试），**迁入本地的依赖倒置纪律与网络出口**，并修掉实测出的远端缺陷。合并全程 `--no-commit`，安全点留在分支 `backup/pre-merge`。
+
+### Added
+- 真实权重回归 `tests/test_real_weights.py`（13 项）：`TorchRuntime` 契约、`DetectionEngine` + 真实权重端到端、`Decider`/`PostProcessor` 边界同判、HTTP `/detect` + 401 + `X-With-Mask` opt-in。动机是冒烟测试 13 项全用 `FakeRuntime`，"后端接口与真模型对不上"这类缺陷一条也抓不到——合并时正好撞上
+- `app/adaptation/base.py` 迁入 DTO（`DetectionResultDTO` / `DetectionEvent`）与反向注入协议（`IImageService` / `IDetectionEngine` / `IResultSink`）、`NetworkConfig` / `NetServerOptions`
+- `configs/default.yaml` 新增 `runtime` 节（板端 rknn + `runtime.host` 开发机覆盖层），`camera` / `relay` 节入 `logic_layer/config.py` 类型化（`CameraConfig` / `RuntimeConfig` / `RelayConfig`）
+- `app/main.py` 重写为**唯一组合根**（336 行）：`build_config` 四段合并（dataclass 默认 ← `configs/default.yaml` ← 平台持久配置 ← 命令行），四种形态 = 板端常驻循环 / `--detect` / `--serve-net` / `--selftest`
+- `serve.py` 保留为 22 行兼容壳，参数原样转发，不再承接逻辑
+
+### Changed
+- **包名回到 `app/`**（与 11-05 那条 `app/ → moireguard/` 形成往返）：远端按 SDD §5 用 `app/` 落地，两套三层并存必然继续漂移，`moireguard/` 源码已全部 `git rm`
+- 默认值真源从三处收敛到一处：`bootstrapper.DEFAULTS` 改为由 `config.AppConfig` 的 dataclass 导出（此前 `config.py` / `bootstrapper.py` / `configs/default.yaml` 各写一份且模型路径不同，开发机永远拿错路径）
+- 适配层不再 import 逻辑层（`torch_runtime.py` 原借用 `logic_layer.exceptions`，违反 DIP 红线）
+- 平台判定改为按"是否装了产品镜像"识别（`/etc/moireguard`、`/usr/share/moireguard`、`rknnlite` 可导入），开发机可用 `MOIREGUARD_PLATFORM` 强制；此前按 `sys.platform == "linux"` 判定，WSL 被误当板端去读 `model.rknn`
+- `factory.make_runtime("auto")` 去掉 `rknn→onnx→torch` 软回退：选定即定死，缺失显式报 `E-BACKEND-UNAVAILABLE`（板端静默跑 CPU torch 会让"NPU 已就位"的结论失真）
+- 目录树真源唯一化：SDD §5 为唯一一份，`docs/ARCHITECTURE.md` §6 与 `README.md` 改为指针
+- `docs/api/README.md` 网络出口 4 端点、鉴权与掩膜 opt-in 行为入档（不再是纯占位）
+
+### Fixed（远端缺陷，均有实测复现）
+- `TorchRuntime` 把 `registry.create()` 返回的 `DetectorCore` 当 `nn.Module` 调用 → `'SFRNetDetector' object is not callable`，真实权重路径 100% 崩溃（改为 `core.forward(t)`）
+- `load(model_path)` 丢弃入参不用 → 配置里的权重路径成了死字段（现真传递，并做绝对/工作目录/仓库根三级定位）
+- `bootstrapper` 把任何加载异常一律标 `E-WEIGHT-NOT-FOUND` → 一次 `TypeError` 被报成"权重找不到"，直接带偏排障；现按 `FileNotFoundError` / 已带 `E-*` / 其余归 `E-RUNTIME-FAIL: 类型名` 分类
+- `app/main.py` 的 `--model` 在 `bootstrap()` **之后**赋值 → 对首次加载是死标志；现经 `engine.bootstrap(overrides)` 在加载前生效
+- `detect_once` 只用构造期的 `Decider()` → `req.threshold` / `req.coverage_threshold` 被静默忽略；现按请求重建
+- `app/adaptation/__init__.py` 只 re-export `factory` 模块 → `ada.detect_platform` AttributeError，说明该入口从未跑起来过；现补齐工厂函数与抽象类导出
+- 开发机日志全静默：`HostDeviceIO` 无 handler，`logging.lastResort` 只放行 WARNING 及以上，"跑完一声不响"比报错更难查；现挂 stdout handler，并置 `propagate = False`（修 `run_sim.py` 每条日志打两遍）
+- `factory` 引用的模块名不存在（`camera/v4l2.py` 案例名、`FileCamera` 类名）→ `ModuleNotFoundError` 而非可读错误
+- 存活探针 `/healthz` 被鉴权闸门拦住：配 `network.token` 后探针拿到 401（实测），等于让监控系统把健康服务判成"服务已死"。现 `/healthz` 免鉴权（不触发推理、不回诊断数据），`/status`、`/stream`、`/detect` 一律仍过 token。`--selftest` 因不配 token 照不到这条，已在 `tests/test_real_weights.py` 补两条断言（免鉴权 200 / 诊断面仍 401）
+- `FileCamera` 的 `frame_id` 前缀 `sim-` 出现在产品形态日志里（`python -m app.main` 常驻也打 `frame=sim-000002`），与附录 B 的逐帧日志契约不符；改为按来源类型命名 `file-`（与 `fake-`、V4L2 的毫秒时间戳同口径）
+- 文档事实：`build/README.md` 板型 RK3588S → **RK3576**（远端新增文件里的漏改，全库 RK3588 已清零）；`docs/README.md` 章节指针纠错（两个预留接口在 §4.2 非 §5，逻辑层在 §4.3 非 §6）与不存在的 `guides/*.md` 清单；SDD §5 树按现实重写并列出 5 条"文档声称 vs 实际状态"缺口（`supervisor.py`、`build/calib/`、`image_ohos/`、`ohos_io.py`、网络出口未立项）；`upstream/` 路径引用（`utils/` 已改名）；两处指向不存在的 `Supervisor` 的代码注释
+
+### Removed
+- 根目录 `SOFTWARE_DESIGN.md`：11-05 已移动到 `docs/design/`，但远端 4 个提交里的 `eccf5dc` 又把 v2.0→v2.3 的升级写回了这份**老副本**，导致两份 SDD 并存且根副本仍是 RK3588S 与已证伪的 1.5 GFLOPs 推算。逐块 diff 确认根副本无任何独有内容（7 处差异全是本地更正的旧态），故删除、保留 `docs/design/` 一份
+- `.merge_scratch/`（合并期临时留存的 4 个旧文件副本）
+
+### 验证（开发机 RTX 5060 Ti / py3.12 / torch 2.13+cu130）
+- `tests/smoke_board_pipeline.py` **13/13**；`tests/test_real_weights.py` **13/13**
+- 数值跨栈一致，三条独立路径互证同一张摩尔纹样张：板端常驻循环 `coverage=0.997286 / tiles=32`、`run_sim.py` 两帧 `0.997286`、`--detect` `0.997296`（与合并前 `serve.py --detect` 完全一致）；IDE 截图 `0.981504`
+- `--selftest` PASS（`/status` 200、`/healthz` 200）；`--serve-net` 常驻进程实测：无 token 的 `/healthz` 200、`/status` 401、`/detect` 401，带 token 的 `/detect` 返 `coverage=0.997296` + `mask_png_b64`（与 `--detect` 同值）
+- README 里列的 6 条命令本轮全部实跑一遍（`--detect` / 常驻循环 / `--serve-net` / `--selftest` / `run_sim.py` / `serve.py` 壳），不写未验证的命令
+
+---
+
 ## [Unreleased] - 2026-11-05
 
 ### Added

@@ -3,17 +3,18 @@
 本文档提供软件的整体架构视图，帮助开发者快速理解系统设计。
 
 > ⚠️ **本文已部分过期（2026-11-03 桌面端时代的概览），架构基准以**
-> [design/SOFTWARE_DESIGN.md](design/SOFTWARE_DESIGN.md) **v2.2 与**
+> [design/SOFTWARE_DESIGN.md](design/SOFTWARE_DESIGN.md) **v2.3 与**
 > [design/CONTROL_LOGIC.md](design/CONTROL_LOGIC.md) **为准。**
 >
-> 下列描述已被 v2.2 推翻，阅读时请自行校正：
+> 下列描述已被 v2.3 推翻，阅读时请自行校正：
 >
 > | 本文说法 | v2.2 现状 |
 > |---|---|
 > | “桌面端工具”、“双击 exe，选图即用” | 开发板上**无头常驻服务**，交付物为可烧录镜像（systemd / 系统服务自启） |
 > | 三层 = 控制层(UI) / 逻辑层 / 模型层 | 三层 = **适配层 / 模型层 / 逻辑层**，无 UI 层 |
 > | “配置 + UI 热调” | `ConfigManager` 配置校验 + 热更新，不依赖窗体 |
-> | `moireguard/control_layer/` 存在 | **已删除**（空占位，无代码引用） |
+| `moireguard/control_layer/` 存在 | **已删除**（空占位，无代码引用） |
+| 包名 `moireguard/` | **改为 `app/`**，三层全部收敛其下；仓库内不再有 `moireguard/` 源码（2026-11-06 合并消除双真源） |
 > | 逻辑层红线“不持有 Qt 对象” | 改为“不 import 任何平台 SDK” |
 >
 > 保留本文的理由：§5 关键设计决策（为何输出 logits、为何余弦窗融合、为何模型层不算阈值）仍然有效。
@@ -177,36 +178,10 @@
 
 ## 6. 目录结构
 
-```
-SFRNet/
-├── moireguard/                   # 软件主体
-│   ├── model_layer/              # 模型层
-│   │   ├── contracts.py          # 接口契约
-│   │   ├── builtin_adapter.py    # 默认实现
-│   │   ├── registry.py           # 注册表
-│   │   └── detectors/            # 具体模型封装
-│   │
-│   ├── logic_layer/              # 逻辑层
-│   │   ├── inference_service.py  # 推理服务
-│   │   ├── sliding_window.py     # 滑窗引擎
-│   │   ├── postprocess.py        # 后处理器
-│   │   ├── export_service.py     # 导出服务
-│   │   ├── config.py             # 配置管理
-│   │   └── exceptions.py         # 异常定义
-│   │
-│   └── control_layer/            # 控制层 (待实现)
-│       ├── main_window.py
-│       ├── widgets/
-│       └── viewmodels/
-│
-├── upstream/                     # 上游代码 (冻结)
-│   └── sfr/
-│
-├── configs/                      # 配置文件
-├── assets/weights/               # 模型权重
-├── tests/                        # 测试
-└── docs/                         # 文档
-```
+目录树**只在** [design/SOFTWARE_DESIGN.md §5](design/SOFTWARE_DESIGN.md) 维护一份。
+本文此前复制过一份，已与真实结构漂移（写着 `moireguard/` 与 `control_layer/`），故改为指针——两处树各说各话正是这次合并要消除的问题。
+
+---
 
 ---
 
@@ -214,7 +189,7 @@ SFRNet/
 
 根据设计，新增一个模型只需：
 
-1. 在 `moireguard/model_layer/detectors/` 下新建类，实现 `forward(tile) → logits`
+1. 在 `app/model_layer/detectors/` 下新建类，实现 `forward(tile) → logits`
 2. 若输入输出格式不同，另写两个 Adapter
 3. 在 `configs/models.yaml` 里加一段配置
 4. 在 `registry.py` 注册一行三元组
@@ -223,4 +198,4 @@ SFRNet/
 
 ---
 
-*详见 [SOFTWARE_DESIGN.md](design/SOFTWARE_DESIGN.md)*
+*详见 [SOFTWARE_DESIGN.md §5](design/SOFTWARE_DESIGN.md)*

@@ -21,8 +21,17 @@ model:
 # 最大像素数限制 (1.5亿)
 max_pixels: 150000000
 
-# 网络出口（适配层 adaptation/network 读取；逻辑层仅透传不解释）
-# 默认关闭：镜像里不开口，现场写进 /var/lib/moireguard/config.yaml 才启用
+# 推理后端与模型文件（SDD §4.1）
+# 镜像内置值为板端 RKNN；开发机由 HostDeviceIO 自动将 host 子节提升到 runtime 顶层
+runtime:
+  backend: "rknn"
+  model_path: "/usr/share/moireguard/models/model.rknn"
+  host:
+    backend: "torch"
+    model_path: "assets/weights/SFR_best.pth"
+
+# 网络出口（app/adaptation/network 读取；逻辑层仅透传不解释）
+# 默认关闭：镜像里不开口，现场写进 /var/lib/moireguard/override.yaml 才启用
 network:
   enabled: false
   host: "127.0.0.1"      # 产线内网段或 0.0.0.0 才需配 token
@@ -31,3 +40,13 @@ network:
   allow_paths: false     # 允许 JSON 请求用本机文件路径引用图像
   max_upload_mb: 64
   sse_heartbeat_s: 15.0
+
+# WiFi 画面回传（app/adaptation/relay，旁路诊断面，见 SDD §4.5.2）
+relay:
+  enabled: false        # 画面回传默认关闭（SDD 4.5.2 R7）
+  host: "192.168.1.100"
+  port: 9000
+  interval_frames: 6
+  jpeg_quality: 75
+  downscale: 1080
+  overlay_result: true
