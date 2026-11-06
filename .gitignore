@@ -55,6 +55,15 @@ docs/vendor/som7609/*
 !docs/vendor/purplepi-oh2/.gitkeep
 !docs/vendor/som7609/.gitkeep
 
+# Windows 侧开发板工具链与虚拟机镜像（合计 ~4.8 GB：Rockchip 烧录/量产/写号 GUI、
+# MobaXterm、adb/hdc、VirtualBox + Ubuntu22.04 ISO）。
+# 全是可从厂商资料站与开源上游重新下载的第三方二进制，且本平台（Linux）跑不起来，不入库。
+Tools/
+
+# 厂商预编译固件（14 个 update.img 压缩包，合计 ~20 GB，解压后单个 .img 达 6.15 GB）。
+# 只能从厂商网盘重下，且属于烧录输入件而非代码产物，不入库。
+预编译固件/
+
 # 定时截屏产物与本地测试样张 (capture_screen.sh / samples/)
 captures/
 samples/

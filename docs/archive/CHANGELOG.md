@@ -116,6 +116,47 @@ urllib.request.proxy_bypass("127.0.0.1")  ->  False        # 实测
 - 裸跑对照：修复前 12 s / 8 299 254 字节 / 0 帧 → 修复后 rc=0、2 帧共 **511 字节**（`fake-000002/000003`，coverage=0.772624，240–396 ms/帧）
 - 上一轮那条 README 承诺「以下每条都在开发机实测跑通」中的 `python -m app.main` 一行，到本轮才第一次真正成立
 
+### 板端首次上电取证（推翻本文与 vendor README 的一处假设）
+新增 `docs/guides/BOARD_BRINGUP.md`，它是 RK3576 实板第一次上电的原始数据**唯一留存**（含刷机即失的 SN/MAC）。
+取证经 Windows 侧 `adb.exe` 从 WSL 驱动；出厂态为 Android 14 userdebug（`rockchip/rk3576_u:14/UQ1A.240205.004.B1/tbr09191354`，
+kernel 6.1.141 #52 SMP PREEMPT，`verifiedbootstate=orange` 未锁定）。
+
+- **推翻一条写进本文与 `docs/vendor/README.md` 的取证前提**：原话"`librknnrt.so` 的版本能定 Toolkit2 对齐口径"实测不成立 ——
+  `/vendor /system /odm /oem /apex /data` 全盘搜 `*rknn*` 命中 0，`/vendor/bin` 无 `rknn_server`，`getprop` 只有五个 `*rockchip` HAL。
+  出厂安卓根本没带 NPU runtime，Toolkit2 口径只能改从厂商 Linux SDK 拿。同一段里另两项（dmesg 定 DDR、cpufreq 定大小核）**成立**，
+  所以取证路线整体仍值得做，而且不必"抢"——正常上电就能重连 adb，窗口每次都在。
+- **纠正 SDD §1.1 一处 CPU 事实错误**：本文长期写"4×A72 @2.2GHz + 4×A53 @2.2GHz"。实测 `policy0`（A53×4，`CPU part 0xd03`）
+  档顶 **2016 MHz**、`policy4`（A72×4，`0xd08`）档顶 **2208 MHz**。**A53 到不了 2.2 GHz**，软回退（`OnnxRuntime CPU` 落在 A53）
+  的预算要按 2.016 GHz 重估。
+- **LPDDR 口径冲突收窄但未结**：`dmc available_frequencies` = 534/1320/1968/2736 MHz，`normal_rate` 1968 MHz，`MemTotal` 3,990,676 kB。
+  没有 LPDDR5 该有的 3200+ 档 → **"LPDDR5" 判死**；但板上无 DDR 类型节点（debugfs 未挂载、无 `/proc/ddrinfo`），LPDDR4 还是 4X
+  仍不断言。上一轮 11-05 那条 Known Issue「需上电实测后回填 §1.1」到本轮**部分关闭**。
+- **新增两项此前无依据的事实**：NPU devfreq **300–950 MHz** 且 governor `rknpu_ondemand` → 冷启动首帧跑低档，
+  **任何延迟实测必须先 warmup 再计时**；eMMC 实测 `mmc0: new HS400 Enhanced strobe MMC card` → 5.1 口径坐实。
+- **烧录路径由文档断言升级为实板确认**：厂商《上手指南》§八只有 USB 直连（Loader / `adb reboot loader` / Maskrom 三法），
+  **无 SD 启动**；`SDDiskTool` 内部 `sd_boot_config.config` 自述 "rockchip sdcard boot config file **for factory**"，
+  TF 卡在功能表里的用途写的是"测试传输8G文件"。首轮选型定为 `IDO_PurplePiOH2_V1B_Ubuntu22.04_HDMI4K_250907R.img`
+  （zip 1,886,793,196 B / img 6,163,532,419 B / MD5 `8cdd8d825ea8976239a702b7586f3406`，`unzip -t` 全量 CRC 通过），
+  拒绝 Xenomai/Preempt 与 Buildroot 的理由见 BOARD_BRINGUP §4。
+- 摄像头接线：厂商手册确认板上 **3 路**座，**J19/J25 默认适配 IMX415，J20 是 OV13855（画面偏绿）**。插错不报错，
+  属"能跑但结果是错的"，已写进验收清单。
+- 串口：`/proc/cmdline` 的 `console=ttyFIQ0` → RK35xx 调试串口是 **1500000-8N1，不是 115200**。
+
+### 仓库卫生（顺带做的三件事）
+- `.gitignore` 新增 `Tools/`（4.8 GB：Windows 侧烧录/调试工具链 + VirtualBox + Ubuntu 22.04 ISO）与 `预编译固件/`
+  （14 个 update.img 压缩包，19 GiB）。两者原本处于"未跟踪但也没被忽略"状态，一次 `git add -A` 就会把二进制永久
+  写进历史。已用 `git check-ignore -v` 验证命中。
+- `Tools/` 内 8 个 `(1)` 副本经 md5 逐条比对与正本完全相同，已删除（82 MB）。
+- `ubuntu-22.04.5-desktop-amd64.iso.baiduyun.p.downloading` 经 ISO9660 主卷描述符核对**内容完整**
+  （声明 2,325,541 扇区 × 2048 = 4,762,707,968 字节 = 实际大小），已去掉后缀重命名。它是 x86_64 PC 镜像，
+  只服务 RKNN-Toolkit2 转换环境，**不是板端镜像，不能写进 SD 卡**。
+
+### 元教训：`command not found` 不等于"功能被禁用"
+本轮先下过"WSL 互操作被禁用、所以不能从这边驱动 Windows adb"的结论，依据只是 `cmd.exe`/`powershell.exe` 找不到。
+实测三项证据（`/etc/wsl.conf` 里 `enabled=true`、binfmt `WSLInterop` 为 `enabled`、`WSL_INTEROP` 在位）证明**互操作一直是开的**，
+关的只是 `appendWindowsPath=false`，绝对路径 `/mnt/c/Windows/System32/...` 从头就能跑。代价是：差点把"取证"这项一次性动作
+推回手工，并把一条错误的环境结论写进文档。**判"某功能不可用"之前先去找它的开关本身，不要用一次调用失败反推配置。**
+
 ---
 
 ## [Unreleased] - 2026-11-06（接通广播出口：常驻循环 → SSE）

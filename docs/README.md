@@ -19,7 +19,9 @@ docs/
 │
 ├── api/README.md             # API 索引 (正文待补充)
 │
-├── guides/README.md          # 使用指南占位 (INSTALL/QUICKSTART/DEPLOYMENT 尚未撰写)
+├── guides/                   # 使用指南
+│   ├── README.md             #   占位 (INSTALL/QUICKSTART/DEPLOYMENT 尚未撰写)
+│   └── BOARD_BRINGUP.md      #   板端上电取证与烧录手册（RK3576 实测数据与出厂 SN/MAC 的唯一留存）
 │
 ├── literature/               # 论文原文 (1 份 PDF，已入库)
 │

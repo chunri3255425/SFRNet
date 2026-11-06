@@ -22,15 +22,15 @@
 | 项 | 规格 | 对本设计的影响 |
 |---|---|---|
 | 型号 | 触觉智能（Industio）Purple Pi OH2 | 厂商提供 Linux 与 OpenHarmony 双系统支持，契合本项目双系统要求 |
-| SoC | 瑞芯微 **RK3576**（4×Cortex-A72 @2.2GHz + 4×Cortex-A53 @2.2GHz，另含 M0 协处理器） | CPU 本身也有可观算力，可作 NPU 故障时的软回退；A72 代际低于 RK3588S 的 A76，软回退与 CPU 侧融合/后处理的吞吐需按此下调预期 |
-| 内存/存储 | **4 GB + 64 GB eMMC**（订单 SKU：Purple Pi OH2 开发板 4+64G）。内存类型两处口径不一致：商品主图写"高速 LPDDR5"，系列规格页另见 LPDDR4/4X@4266 —— **上电后以 `dmesg \| grep -i ddrc` 与 `/proc/meminfo` 实测为准**，本文不作断言 | 量化后模型与运行时占用 < 500 MB，余量充足；4 GB 内存需注意 4K 图融合缓冲（见 §6 风险 #1）。内存类型只影响实测吞吐预期，不改变任何接口设计 |
-| NPU | **6 TOPS INT8**（RKNN 生态，支持 INT4/INT8/INT16/FP16/TF32；片上 SRAM 1 MB） | 推理后端锁定 **RKNN Runtime**；模型走 `pth → ONNX → RKNN` 转换链。TOPS 与 RK3588S 同为 6，但核数与微架构不同（公开资料对核数口径不一致，本文不作断言），单块延迟必须以实板实测为准 |
+| SoC | 瑞芯微 **RK3576**（4×Cortex-A72 + 4×Cortex-A53，另含 M0 协处理器）。**大小核频率已上电实测**：A72（`CPU part 0xd08`）档顶 **2208 MHz**、A53（`0xd03`）档顶 **2016 MHz**。⚠️ 本文早期版本把两档都写成 2.2 GHz，实测 **A53 到不了 2.2 GHz** | CPU 本身也有可观算力，可作 NPU 故障时的软回退；A72 代际低于 RK3588S 的 A76，软回退与 CPU 侧融合/后处理的吞吐需按此下调预期。A53 侧预算按 **2.016 GHz** 而非 2.2 GHz 估。实测来源见 [BOARD_BRINGUP §2](../guides/BOARD_BRINGUP.md) |
+| 内存/存储 | **4 GB + 64 GB eMMC**（订单 SKU：Purple Pi OH2 开发板 4+64G）。内存类型两处口径不一致：商品主图写"高速 LPDDR5"，系列规格页另见 LPDDR4/4X@4266。**已上电实测**：`MemTotal` = 3,990,676 kB（4 GB 吻合）；`dmc available_frequencies` = **534 / 1320 / 1968 / 2736 MHz**，`normal_rate` = 1968 MHz；`androidboot.fwver` 含 `ddr-v1.10-9071d8ccd4`。⚠️ 档位表里**没有 LPDDR5 应有的 3200+ 档**，最高仅 2736 —— **"LPDDR5" 说法不成立**；但板上读不到 DDR 类型节点（debugfs 未挂载、无 `/proc/ddrinfo`），**具体是 LPDDR4 还是 4X 仍不作断言**，要坐实只能取厂商 SDK 的 dts | 量化后模型与运行时占用 < 500 MB，余量充足；4 GB 内存需注意 4K 图融合缓冲（见 §6 风险 #1）。内存类型只影响实测吞吐预期，不改变任何接口设计。eMMC 代际已实测确认为 **5.1**（`mmc0: new HS400 Enhanced strobe MMC card`） |
+| NPU | **6 TOPS INT8**（RKNN 生态，支持 INT4/INT8/INT16/FP16/TF32；片上 SRAM 1 MB）。**已实测调频档位**：`/sys/class/devfreq/27700000.npu` = **300–950 MHz** 八档（300/400/500/600/700/800/900/950），governor `rknpu_ondemand` | 推理后端锁定 **RKNN Runtime**；模型走 `pth → ONNX → RKNN` 转换链。TOPS 与 RK3588S 同为 6，但核数与微架构不同（公开资料对核数口径不一致，本文不作断言），单块延迟必须以实板实测为准。⚠️ governor 是 `ondemand`，意味着**冷启动首帧跑在低档**，任何延迟实测都必须先 warmup 再计时，否则数字不可比（与 `torch_runtime` 的 warmup 治理同一动机） |
 | 2D 引擎 | 自带 **RGA** 光栅化加速器 | resize / 色彩转换 / 格式拷贝可卸载到 RGA，4K 输入预处理与融合缓冲的 CPU 占用由此降低（`adaptation` 侧可选优化，非首版必需） |
 | 视频输入 | **多路 AHD 视频输入**（商品主图标注） | 除 MIPI CSI 外还有一条候选取帧通路；AHD 若走 V4L2 节点，则 `ICameraAdapter` 只是换一个 device path，业务层无感。是否启用属 Q2 剩余项 |
 | 视频解码 | **4K@120fps**（商品主图标注；RK3576 硬件解码器） | 若输入源是码流而非裸帧，解码可交硬件，不必占用 NPU 与 CPU；当前设计按裸帧取图，暂未用到 |
 | 网络 | **双千兆网口**（商品主图标注） | 硬件上具备"一路进产线网、一路点对点接巡检机"的隔离条件。⚠️ 但本文 §1 与 §4.4 对外的承诺仍然只有一个布尔量，输出走 `IDeviceIO.indicate`；HTTP/SSE 出口是本轮代码新增能力（`adaptation/network/`，配置默认 `enabled: false`），**尚未在本文立项**，是否升为正式输出通道待 Q4 一并定夺 |
-| 烧录 | RKDevTool / 升级固件（.img 刷机包） | 镜像构建产出 RK3576 参数化 .img，Q6 已解 |
-| 摄像头接口 | MIPI CSI ×2（板载）+ USB；ISP 为 RKISP V3.9（16M pixel、HDR 120dB，与主图"16M ISP"一致） | 优先 MIPI CSI 摄像头（RKISP 硬件 ISP），Linux 走 V4L2。**已随板购入 IMX415 模组**（订单含"Purple Pi OH2 + IMX415 摄像头"），即 8MP/4K 级 MIPI CSI-2 传感器，Q2 的接口之争基本落定 |
+| 烧录 | RKDevTool / 升级固件（.img 刷机包）。**已实板确认只有 USB 直连一条路**：厂商《上手指南》§八通篇是 OTG + Loader/Maskrom，**无 SD 启动路径**；TF 卡座是外设存储（功能表原文"TF卡(测试传输8G文件)"） | 镜像构建产出 RK3576 参数化 .img，Q6 已解。首轮点板用厂商预编译固件 `IDO_PurplePiOH2_V1B_Ubuntu22.04_HDMI4K_250907R.img`（选型与拒绝项见 [BOARD_BRINGUP §4](../guides/BOARD_BRINGUP.md)）；⚠️ 烧录只能在 Windows 主机做，WSL 不透传 USB |
+| 摄像头接口 | MIPI CSI ×2（板载）+ USB；ISP 为 RKISP V3.9（16M pixel、HDR 120dB，与主图"16M ISP"一致）。厂商《Linux 使用手册》：板上实为 **3 路**摄像头座 J19/J20/J25，**J19 与 J25 默认适配 IMX415，J20 默认适配 OV13855** | 优先 MIPI CSI 摄像头（RKISP 硬件 ISP），Linux 走 V4L2。**已随板购入 IMX415 模组**（订单含"Purple Pi OH2 + IMX415 摄像头"），即 8MP/4K 级 MIPI CSI-2 传感器，Q2 的接口之争基本落定。⚠️ 接 IMX415 必须用 **J19 或 J25**；插 J20 不报错但画面偏绿，属"能跑但结果是错的"一类，已列入验收清单 |
 | **摄像头型号（已定）** | **Sony IMX415**（MIPI CSI-2 接口，经板载 RKISP） | 1/2.8" STARVIS，8.46 MP，最高 3840×2160@30fps —— 传感器原生分辨率与模型 4K 基准（UHDMD）一致，滑窗参数（tile 512 / stride 256）无需调整；低照灵敏度高，适配现场光照不均的屏摄场景。Linux 下经 RKISP 驱动暴露 `/dev/video*`，V4L2 取帧即可，**无需新增驱动层抽象**（Q2 已解） |
 
 **推理后端决策随之收敛**：
