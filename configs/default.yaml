@@ -20,3 +20,14 @@ model:
 
 # 最大像素数限制 (1.5亿)
 max_pixels: 150000000
+
+# 网络出口（适配层 adaptation/network 读取；逻辑层仅透传不解释）
+# 默认关闭：镜像里不开口，现场写进 /var/lib/moireguard/config.yaml 才启用
+network:
+  enabled: false
+  host: "127.0.0.1"      # 产线内网段或 0.0.0.0 才需配 token
+  port: 8340
+  token: ""              # 非空则要求 Authorization: Bearer <token>
+  allow_paths: false     # 允许 JSON 请求用本机文件路径引用图像
+  max_upload_mb: 64
+  sse_heartbeat_s: 15.0

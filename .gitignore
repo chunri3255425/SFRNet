@@ -47,6 +47,10 @@ assets/weights/*
 # 数据目录
 data/
 
+# 定时截屏产物与本地测试样张 (capture_screen.sh / samples/)
+captures/
+samples/
+
 # 日志
 logs/
 *.log

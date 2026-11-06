@@ -2,9 +2,9 @@
 配置管理器 (Config Manager)
 
 加载顺序:
-  1. configs/default.yaml (内置默认)
-  2. 用户配置 %APPDATA%/MoireGuard/config.yaml
-  3. 本次会话 UI 覆盖
+  1. configs/default.yaml (镜像内置默认) —— 已实现
+  2. 平台侧持久化配置 (由适配层决定落点: Linux / 鸿蒙各不同) —— 尚未实现
+  3. 运行时热更新覆盖 (update()，不需重启) —— 已实现
 """
 
 from pathlib import Path
@@ -44,6 +44,10 @@ class AppConfig:
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     max_pixels: int = 150_000_000  # 1.5亿像素上限
+    # 网络出口参数原样透传: 逻辑层不解释 network 节，避免反向依赖适配层
+    # (依赖方向: 逻辑层 → 模型层 → 适配层)。类型化由组合根转成
+    # adaptation.base.NetworkConfig.from_dict()。
+    network: dict[str, Any] = field(default_factory=dict)
 
 
 class ConfigManager:
@@ -91,6 +95,9 @@ class ConfigManager:
         
         if "max_pixels" in data:
             self._config.max_pixels = data["max_pixels"]
+
+        if isinstance(data.get("network"), dict):
+            self._config.network = dict(data["network"])
     
     @property
     def config(self) -> AppConfig:

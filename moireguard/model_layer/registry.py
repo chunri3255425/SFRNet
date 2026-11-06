@@ -40,20 +40,19 @@ class ModelRegistry:
     def _register_builtins(self):
         """注册内置模型"""
         # SFRNet UHD 模型
-        try:
-            from moireguard.model_layer.detectors.sfrnet_detector import SFRNetDetector
-            self.register(ModelBundle(
-                model_id="sfrnet_uhd",
-                display_name="SFRNet (UHD Moiré)",
-                core_factory=SFRNetDetector,
-                input_adapter_factory=RGBInputAdapter,
-                output_adapter_factory=SFRNetOutputAdapter,
-                default_weights="assets/weights/SFR_best.pth",
-                expected_tile_size=512,
-                expected_stride=256,
-            ))
-        except ImportError:
-            pass  # SFRNetDetector 尚未实现
+        # 不做 try/except 兜底: 本模块已硬依赖 torch，导入失败说明环境不完整，
+        # 必须让它在启动阶段直接暴露，而不是退化成"注册表为空"的假象。
+        from moireguard.model_layer.detectors.sfrnet_detector import SFRNetDetector
+        self.register(ModelBundle(
+            model_id="sfrnet_uhd",
+            display_name="SFRNet (UHD Moiré)",
+            core_factory=SFRNetDetector,
+            input_adapter_factory=RGBInputAdapter,
+            output_adapter_factory=SFRNetOutputAdapter,
+            default_weights="assets/weights/SFR_best.pth",
+            expected_tile_size=512,
+            expected_stride=256,
+        ))
     
     def register(self, bundle: ModelBundle) -> None:
         """注册一个模型"""

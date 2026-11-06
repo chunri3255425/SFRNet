@@ -11,7 +11,7 @@ from upstream.sfr.sfrnet import build_SFR
 def main():
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    MODEL_PATH = r'./checkpoints/ins/SFR_best.pth'
+    MODEL_PATH = r'./assets/weights/SFR_best.pth'
     TEST_DIR = r'./data/test_data1/moire'
     SAVE_DIR = r'./data/test_data/result_INS1'
     os.makedirs(SAVE_DIR, exist_ok=True)
