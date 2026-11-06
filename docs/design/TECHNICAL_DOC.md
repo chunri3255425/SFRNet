@@ -5,7 +5,7 @@
 > 文档版本：v2.0（论文版增补，在原 v1.0 源码分析基础上补全论文理论侧）
 > 分析对象：`https://github.com/chunri3255425/SFRNet.git` @ `51f4057`（branch `main`，含 11 个文件，51 MB）
 > 撰写依据（三重交叉验证）：
-> ① **论文原文**——`SFRNet--Ultra-high-definition-moir--pattern-_2027_Expert-Systems-with-Applic.pdf`（12 页，全文文本已逐页解析）＋`SFRNet论文中文翻译.docx`；
+> ① **论文原文**——`docs/literature/SFRNet--Ultra-high-definition-moir--pattern-_2027_Expert-Systems-with-Applic.pdf`（12 页，全文文本已逐页解析）＋`SFRNet论文中文翻译.docx`（不在仓库内，仅在 `D:\视觉识别项目`）；
 > ② **源码级通读**——`train.py` / `predict.py` / `upstream/data_loding.py` / `upstream/metrics.py` / `upstream/sfr/{sfrnet,safm,FRM}.py` 共 979 行；
 > ③ **实机验证**——加载 `SFR_best.pth` 于 PyTorch 2.12.0 执行前向 hook、反向梯度探针、算子级 MACs 累加、参数去重统计。
 >

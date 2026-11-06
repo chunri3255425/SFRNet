@@ -48,6 +48,13 @@ assets/weights/*
 # 数据目录
 data/
 
+# 厂商手册与规格书 PDF（合计 ~25 MB，可从厂商资料站重新下载，不入库）
+# 用「目录/* + !.gitkeep」写法保留目录结构；写成「目录/」会让例外规则失效
+docs/vendor/purplepi-oh2/*
+docs/vendor/som7609/*
+!docs/vendor/purplepi-oh2/.gitkeep
+!docs/vendor/som7609/.gitkeep
+
 # 定时截屏产物与本地测试样张 (capture_screen.sh / samples/)
 captures/
 samples/

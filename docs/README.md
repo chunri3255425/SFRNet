@@ -21,6 +21,14 @@ docs/
 │
 ├── guides/README.md          # 使用指南占位 (INSTALL/QUICKSTART/DEPLOYMENT 尚未撰写)
 │
+├── literature/               # 论文原文 (1 份 PDF，已入库)
+│
+├── vendor/                   # 厂商手册与规格书 (PDF 不入库，清单见 vendor/README.md)
+│   ├── README.md             #   入库：哪份手册讲什么 + 重新下载出处
+│   ├── purplepi-oh2/         #   整板 5 份：Linux 使用/开发手册、OpenHarmony 使用手册、
+│   │                         #   开发板规格书、上手指南
+│   └── som7609/              #   核心板 3 份：S1/S2 规格书、S1 硬件设计指南
+│
 └── archive/                  # 归档文档
     └── CHANGELOG.md          # 变更日志
 ```
@@ -64,6 +72,10 @@ docs/
 **上游代码问题**
 → 阅读 [TECHNICAL_DOC.md](design/TECHNICAL_DOC.md) 缺陷清单
 
+**硬件手册与核心板规格**
+→ 先读 [vendor/README.md](vendor/README.md) 的清单；PDF 本身不入库，需从厂商资料站下载。
+   安卓路线不在项目计划上，故不再收安卓手册，缘由见 [CHANGELOG](archive/CHANGELOG.md)
+
 **应用落地方案**
 → 阅读 [SFRNet大创创意方向方案.md](SFRNet大创创意方向方案.md)
 
@@ -90,7 +102,7 @@ docs/
 
 - **项目 README**: [../README.md](../README.md)
 - **上游仓库**: https://github.com/chunri3255425/SFRNet.git
-- **论文**: SFRNet--Ultra-high-definition-moiré-pattern-_2027_Expert-Systems-with-Applic.pdf
+- **论文**: [SFRNet (ESWA 2027)](literature/SFRNet--Ultra-high-definition-moir--pattern-_2027_Expert-Systems-with-Applic.pdf) — 目录 [literature/](literature/)
 
 ---
 

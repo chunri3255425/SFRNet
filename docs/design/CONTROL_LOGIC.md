@@ -129,6 +129,8 @@ frame = camera.grab(timeout_ms=3000)
 | `interval_ms > 0` | 两帧**开始**时刻的最小间隔 | 板端建议 `max(200, 实测单帧耗时×1.2)` |
 | `drop_policy = "latest"` | 间隔期间产生的帧全部丢弃，只留最新一帧 | **默认**。避免排队积压导致延迟越滚越大 |
 
+> `drop_policy` 是**规格名，不是代码参数**：实现上不存在帧队列，`run_forever` 到点直接 `camera.grab()` 取当下最新帧，因此 "latest" 是不需要开关的默认且唯一行为（若将来真要 FIFO 队列，需在适配层新增缓冲并显式立项）。
+
 > **为什么必须 `latest`**：摄像头以 30fps 产帧、单帧推理要 300ms 时，若用 FIFO 排队，第 N 帧处理完时队列里已积压 9 帧，端到端延迟单调增长直到内存耗尽。`latest` 策略把系统从"追帧"变为"跟最新"，代价是丢帧率上升——无人值守场景下这是正确取舍。
 
 ### 3.2 尺寸准入（**必须先做，否则模型崩溃**）
@@ -371,8 +373,14 @@ out = numerator / clamp(denominator, min=1e-8)
 | 通道数 ∉ {1,3,4} | 适配器抛 `TypeError` |
 | 契约校验失败 | `assert_input_contract` 抛 `E-CONTRACT-*` |
 | 尺寸不满足 §3.2 | `E-INPUT-SHAPE` |
+| 像素与元数据不符（`data.shape[:2] != (height, width)`）或不是 HxWx3 | `frame_shape_error()`（`adaptation/camera/base.py`），引擎每帧取帧后第一道闸调用 |
 | **全黑帧**：`mean(张量) < 0.02` 且 `std < 0.01` | 补丁级判据（当前代码无此检查） |
 | **全白过曝帧**：`mean > 0.98` 且 `std < 0.01` | 同上 |
+
+> **为何把通道钉死为 3**：上表的 {1,3,4} 是「图像本身可用」的宽判据；而引擎→后端
+> 之间是固定的 NCHW 3 通道契约（`_infer_padded` 直接 `transpose(2,0,1)`），灰度/RGBA
+> 的归一化属适配层职责（V4L2 与文件源都已 `BGR2RGB`）。形状不合归坏帧，不归 capture
+> 或 infer——重开摄像头和重载模型都救不了它。
 
 **动作**：跳过该帧，`frame_skip_count += 1`，输出沿用上一有效值 + 警告位。连续 10 帧坏帧 → 转 `DEGRADED` 并持续告警（不升级 FATAL，因为可能只是镜头被遮挡）。
 
@@ -397,6 +405,13 @@ out = numerator / clamp(denominator, min=1e-8)
 1. **固定间隔 2s，不用指数退避**。嵌入式场景下摄像头重开本身有硬件级延迟（USB 枚举、V4L2 buffer 分配通常 300–800ms），指数退避会让恢复时间不可预测。简单可靠优先。
 2. **DEGRADED 期间沿用一个旧的 `True`**，不输出 `False`。否则下游会看到"有摩尔纹 → 无摩尔纹 → 有摩尔纹"的跳变。
 3. **恢复成功后计数器清零**。计数是"连续失败"，不是累计失败。
+4. **未知异常的"重启"边界**。表里的"回 BOOTING STEP 3"在实现中只能重跑 `Bootstrapper`
+   （STEP 4 模型 → STEP 5 摄像头 → STEP 6 自检）：STEP 3 的适配器装配由组合根的
+   `factory` 完成，引擎无法自我重造。所以 3 次仍失败即 FATAL，由组合根以**退出码 1**
+   收摊，让 `Restart=on-failure` 去做一次真正的整机重启。
+5. **每类错误的日志必须有界**。上限计数与退避同时承担这个职责：`interval_ms=0` 的
+   全速循环里，一条无条件 ERROR 就是每秒数千行（实测 12 s 刷 8.3 MB），板端 flash
+   寿命和日志可读性一起没。坏帧告警只在跨阈值那一次落日志。
 
 ### 6.2 恢复判定伪代码
 
@@ -521,7 +536,7 @@ def run_forever(req, on_result):
 2. 等待当前帧完成，最多再等 1 个 timeout_ms
      超时 → 强制放弃该帧（记 WARN, "frame_dropped_on_shutdown"）
 3. 按序释放：camera.close() → runtime.unload() → log.flush()
-4. 指示熄灭，退出码 0
+4. 指示熄灭；退出码：正常收摊 0，恢复超限（FATAL）1
 
 异常路径：收到 SIGKILL 时不做任何清理（无持久状态，冷启动即可恢复）
 ```

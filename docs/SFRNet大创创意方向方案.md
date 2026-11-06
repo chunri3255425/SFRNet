@@ -1,7 +1,7 @@
 # SFRNet 面向大创的创意方向与应用落地方案
 
 > 依据材料：`D:\视觉识别项目` 内
-> ① `SFRNet--Ultra-high-definition-moiré-pattern-_2027_Expert-Systems-with-Applic.pdf`（ESWA 332 (2027) 133519）
+> ① `SFRNet--Ultra-high-definition-moiré-pattern-_2027_Expert-Systems-with-Applic.pdf`（ESWA 332 (2027) 133519；本仓库内副本已归位至 `docs/literature/`）
 > ② `SFRNet论文中文翻译.docx`
 > ③ `TECHNICAL_DOC.md`（v2.0，1660 行，含源码行级核验与实机实测）
 >

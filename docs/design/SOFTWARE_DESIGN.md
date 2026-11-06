@@ -475,7 +475,8 @@ class DetectionEngine:
           1. 停止接收新帧
           2. 等待当前帧完成（最多再等一个 timeout_ms）
           3. 按序释放：摄像头 → 推理后端 → 日志 flush
-          4. 指示层熄灭，进程退出码 0
+          4. 指示层熄灭；退出码 0 = 正常收摊，1 = 恢复超限（FATAL）
+             —— unit 是 Restart=on-failure，FATAL 返 0 等于告诉 systemd 不必拉回
         """
 ```
 
@@ -556,7 +557,7 @@ DetectionService ──取帧成功后旁路挂接──> StreamTap（逻辑层�
 
 | # | 规则 | 理由 |
 |---|---|---|
-| R1 | **丢新不堵旧**：发送队列长度恒为 1，新帧到来覆盖旧帧（与取帧的 `drop_policy="latest"` 同一取舍） | 带宽不够时宁可降帧率，不能让检测循环等待网络 |
+| R1 | **丢旧保新（latest-wins）**：待发槽位恒为 1，新帧直接覆盖尚未发出的旧帧，上位机看到的永远是当前画面 | 带宽不够时宁可降帧率，不能让检测循环等待网络；回传的用途是"观察现场"，把旧帧补发出去只会误导观察者 |
 | R2 | **push() 非阻塞**，总耗时预算 ≤ 5 ms（入队即返回，编码与发送都在独立线程） | 画面回传不得挤占单帧检测的耗时预算（§4.3.3） |
 | R3 | **降帧率回传**：默认按固定间隔回传（如 5 fps 或每 N 帧一帧），而非全帧率 | 4K@30fps 原图回传需 >100 Mbps，现场 WiFi 扛不住；JPEG 压缩后 5 fps 约 1–2 Mbps，普通 WiFi 可行 |
 | R4 | **可叠加判定结果**：编码前把 `has_moire`/coverage 以角标文字画进画面（可选开关） | 上位机无需解析第二通道即可看到结论 |
@@ -640,7 +641,7 @@ SFRNet/
 | `device_io/ohos_io.py` | 未落地，鸿蒙侧仅有 `camera/ohos.py` 占位 |
 | `build/image_ohos/`、`build/calib/` | 目录不存在；鸿蒙流水线与 RKNN 量化校准集待 M1 |
 | `logic_layer/supervisor.py` | 无此文件，重试与降级已并入 `engine.py`（C-10~C-13） |
-| 网络出口（`adaptation/network/`） | 代码已可用（HTTP/SSE + token 鉴权），但 §1/§4.4 对外的正式承诺仍只有一个布尔量，是否升为正式输出通道待 Q4 |
+| 网络出口（`adaptation/network/`） | 代码已可用（HTTP/SSE + token 鉴权），且常驻循环的逐帧判定现已真的接进 SSE（`--serve-net --loop`）；但 §1/§4.4 对外的正式承诺仍只有一个布尔量，是否升为正式输出通道待 Q4 |
 | 默认阈值 `threshold=0.5 / coverage_threshold=0.01` | **实测对任何输入都判有摩尔纹**（零内容图 coverage=1.0000），Q5/Q9 未解前不可作交付判据 |
 
 ---

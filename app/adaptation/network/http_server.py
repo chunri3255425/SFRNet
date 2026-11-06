@@ -144,36 +144,38 @@ class HttpNetServer:
                 except ValueError:
                     return -1
 
-            def _drain(self, length: int) -> None:
-                """排空未被消费的请求体。
+            def _drain(self, length: int, cap: int = _DRAIN_HARD_CAP) -> None:
+                """排空未被消费的请求体，最多读 cap 字节。
 
                 keep-alive 下若不排空就回错误响应，残留字节会被当成下一个请求解析，
                 客户端看到的是 Connection reset 而不是我们发的 413。分块读只花带宽，
-                不占内存；超过硬上限则直接断连，不陪无限大的声明体量玩。
+                不占内存；超过 cap 则直接断连，不陪无限大的声明体量玩。
                 """
-                remaining = min(length, _DRAIN_HARD_CAP)
+                remaining = min(length, cap)
                 while remaining > 0:
                     chunk = self.rfile.read(min(65536, remaining))
                     if not chunk:
                         break
                     remaining -= len(chunk)
-                if length > _DRAIN_HARD_CAP:
+                if length > cap:
                     self.close_connection = True
 
-            def _reject(self, code: int, payload: dict, *, drain: bool = True) -> None:
+            def _reject(self, code: int, payload: dict, *, drain: bool = True,
+                        cap: int = _DRAIN_HARD_CAP) -> None:
                 """先排空请求体再回错误响应。
 
                 顺序不能倒：客户端可能声明 `Connection: close`（urllib 默认就这样），
                 先回响应后关连接时，仍在写入的客户端看到的是 reset 而不是我们的状态码。
                 实测“先回后排”下 urllib 连发 12 次超限上传仍有相当比例拿不到 413。
 
-                drain=False 用于未通过鉴权的场合：不该为一个身份不明的发送方
-                读最多 512 MB 的数据，宁可它拿不到完整响应。排空受 _DRAIN_HARD_CAP 约束。
+                cap 收窄排空上限：鉴权失败时压到 max_upload_mb，读取量不越过配置，
+                同时保证正常体量的客户端真能收到 401（原先 drain=False 让 1 MB 的
+                请求体直接撞 broken pipe，实测 6/6 拿不到状态码）。
                 """
                 declared = self._declared_length()
                 if drain and declared > 0:
-                    self._drain(declared)
-                elif declared > _DRAIN_HARD_CAP:
+                    self._drain(declared, cap)
+                elif declared > cap:
                     self.close_connection = True
                 self._json(code, payload)
 
@@ -196,19 +198,35 @@ class HttpNetServer:
                     self._json(200, {"ok": True})
                     return
                 if not self._authorized():
-                    self._json(401, {"error": "unauthorized"})
+                    self._reject(401, {"error": "unauthorized"})
                     return
                 if self.path == "/status":
                     self._handle_status()
                 elif self.path == "/stream":
                     self._handle_sse()
                 else:
-                    self._json(404, {"error": "not found", "endpoints": ["/healthz", "/status", "/detect", "/stream"]})
+                    self._reject(404, {"error": "not found",
+                                       "endpoints": ["/healthz", "/status", "/detect", "/stream"]})
+
+            def handle_expect_100(self) -> bool:
+                """Expect: 100-continue：鉴权不过就不让它开始传体。
+
+                curl 对 >1024 字节的请求体默认带这个头。返回 False 时 stdlib 在
+                parse_request 里就结束本请求，不再走 do_POST，所以最终响应必须由这里发完。
+                放行时交回父类发 100——不回 100 也不报错，curl 会干等一秒才开传。
+                """
+                if self._authorized():
+                    return super().handle_expect_100()
+                # cap=0：一个字节都不读，同时把连接标为关闭。体还在客户端手上，
+                # 留着 keep-alive 只会让下一个请求读到这具残体。
+                self._reject(401, {"error": "unauthorized"}, drain=False, cap=0)
+                return False
 
             def do_POST(self) -> None:  # noqa: N802
                 if not self._authorized():
-                    # 未鉴权不排空：不给身份不明的发送方白读一大块数据
-                    self._reject(401, {"error": "unauthorized"}, drain=False)
+                    # 排空上限只给到 max_bytes：既保证大 body 的客户端也能真看到 401，
+                    # 又不让任意发送方把读取量抬到配置之上。
+                    self._reject(401, {"error": "unauthorized"}, cap=max_bytes)
                     return
                 if self.path != "/detect":
                     self._reject(404, {"error": "not found"})
@@ -232,7 +250,16 @@ class HttpNetServer:
 
             def _handle_detect(self) -> None:
                 if opts.image_service is None:
-                    self._json(503, {"error": "E-ENGINE-NOT-READY: 推理服务未装配"})
+                    # 常驻循环形态（--serve-net --loop）故意不接上传检测：那需要
+                    # 再起一个推理实例，等于板端把权重与 NPU 上下文加载两遍。
+                    # 判定已由 /stream 逐帧推过来了，不再重复开一条热路径。
+                    # 用 _reject 而非 _json：图已经传上来了，不排空就是拿残体污染
+                    # 这条 keep-alive 连接的下一个请求。
+                    if opts.engine is not None:
+                        self._reject(503, {"error": "E-NO-UPLOAD: 常驻循环形态不提供 /detect；"
+                                                   "逐帧判定走 /stream，上传检图请用 --serve-net 单独启动"})
+                        return
+                    self._reject(503, {"error": "E-ENGINE-NOT-READY: 推理服务未装配"})
                     return
                 body = self._read_body()
                 if body is None:

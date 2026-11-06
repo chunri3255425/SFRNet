@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 
 import numpy as np
 
-from app.adaptation.camera.base import ICameraAdapter
+from app.adaptation.camera.base import ICameraAdapter, frame_shape_error
 from app.adaptation.device_io.base import IDeviceIO
 from app.adaptation.runtime.base import IRuntimeAdapter
 from app.logic_layer.config import AppConfig
@@ -104,9 +104,15 @@ class Bootstrapper:
         # STEP 6 连通性自检（非致命：可能摄像头预热中）
         try:
             frame = self._camera.grab(timeout_ms=3000)
-            if frame.data.size == 0:
-                raise RuntimeError("空帧")
-            self._io.log("INFO", f"连通性自检通过: {frame.width}x{frame.height}")
+            # 校像素而不只校“非空”：早先只判 data.size == 0，而形状坏掉的帧
+            # （实测 (480,1,1)）能一路过自检、到真正推理才炸，把恢复引到
+            # “重载模型”这个无关方向上。报的尺寸也从 data 取，不信元数据。
+            err = frame_shape_error(frame)
+            if err:
+                raise RuntimeError(err)
+            self._io.log("INFO",
+                         "连通性自检通过: "
+                         f"{frame.data.shape[1]}x{frame.data.shape[0]}x3")
         except Exception as e:
             warnings.append("self_check_failed")
             self._io.log("WARN", f"连通性自检失败（允许继续）: {e}")

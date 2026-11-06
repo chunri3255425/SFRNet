@@ -39,6 +39,7 @@ pip install -r requirements.txt          # 开发机；板端镜像不装 PyTorc
 python -m app.main --detect samples/moire_photo.jpg      # 单图判定后退出
 python -m app.main                                       # 板端形态：bootstrap → 常驻循环
 python -m app.main --serve-net --port 8340 --token xxx   # 网络出口常驻
+python -m app.main --serve-net --loop --camera samples/moire_photo.jpg   # 常驻循环 + 网络出口（判定实时推 SSE）
 python -m app.main --selftest --port 8399                # 不加载权重，仅验网络装配
 python run_sim.py --source 0 --backend torch --show      # 开发机模拟板端（摄像头/视频/图片）
 python serve.py --detect a.jpg                           # 兼容壳，等价于 python -m app.main
@@ -62,9 +63,17 @@ print(f"覆盖率: {result.coverage:.2%}  存在摩尔纹: {result.has_moire}")
 ### 测试
 
 ```bash
-python tests/smoke_board_pipeline.py    # 13 项：假适配器冒烟（不需要权重/torch）
-python tests/test_real_weights.py       # 13 项：真实权重 + HTTP 出口回归（无 torch 或无样张则跳过）
+python tests/smoke_board_pipeline.py    # 36 项：假适配器冒烟（不需要权重/torch）
+python tests/test_real_weights.py       # 27 项：真实权重 + HTTP 出口回归（无 torch 或无样张则跳过）
 ```
+
+**退出码**（`moireguard.service` 是 `Restart=on-failure`，只有非 0 才会被拉回）：
+
+| 码 | 含义 |
+|---|---|
+| 0 | 正常收摊：`--detect` 出结果、SIGTERM/`stop()` 走完三步释放、限帧跑满 |
+| 1 | 启动致命（权重缺失/结构不匹配/摄像头开不开）或**循环中恢复超限**（FATAL，C-10~C-13 与未知异常各自的 retries 用尽） |
+| 2 | 装配前的用法错误：`--loop` 未配 `--serve-net`、网络配置不可用、主机侧服务构建失败 |
 
 ## 项目结构
 
@@ -92,6 +101,8 @@ SFRNet/
 | [build/README.md](build/README.md) | 🏗️ 模型转换与镜像构建流程 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | ⚠️ 旧版桌面端概览 (已被 v2.3 取代) |
 | [docs/SFRNet大创创意方向方案.md](docs/SFRNet大创创意方向方案.md) | 💡 应用落地方案 |
+| [docs/literature/](docs/literature/) | 📄 论文原文（已入库） |
+| [docs/vendor/](docs/vendor/README.md) | 📐 厂商手册与核心板规格（PDF 不入库） |
 
 ## 技术规格
 
