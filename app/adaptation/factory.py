@@ -40,8 +40,13 @@ def detect_platform() -> str:
         return forced
     if sys.platform.startswith("linux") or sys.platform.startswith("ohos"):
         from pathlib import Path
-        # OpenHarmony 用户态仍可能报 linux；用 OH 特征目录判别
-        if Path("/etc/ohos_release").exists() or Path("/system/etc").exists():
+        # OpenHarmony 用户态仍可能报 linux，需要正特征来判别。只认
+        # /etc/ohos_release：原判据里的 /system/etc **已实测被推翻**——RK3576 板
+        # 厂商的 Ubuntu 22.04 固件本身就带 /system/etc/{firmware,lib}（装的是供应商
+        # 固件），拿它当 OH 特征会把真板子判成鸿蒙，相机被装配成未实现的
+        # OhosCameraAdapter 后直接 FATAL。真 OH 硬件请用 MOIREGUARD_PLATFORM=ohos
+        # 显式指定（该分支至今无硬件可验，不做默认猜测）。
+        if Path("/etc/ohos_release").exists():
             return OHOS
         if (Path("/etc/moireguard").exists()
                 or Path("/usr/share/moireguard").exists()
@@ -70,18 +75,24 @@ def make_camera(platform: str | None = None, device: str | None = None,
     """
     platform = platform or detect_platform()
 
-    if platform == OHOS:
-        from app.adaptation.camera.ohos import OhosCameraAdapter
-        return OhosCameraAdapter(**kwargs)
-
+    # 显式给了 device 就以 device 为准，平台只负责挑**默认**源。原来 OHOS 分支
+    # 排在最前面直接 return，等于在鸿蒙判定下无声丢弃调用侧的 --camera（实测
+    # 板端 `--camera xxx.jpg` 因此根本到不了 FileCamera）。
     if device is None:
-        if platform in (LINUX, OHOS):
-            device = "/dev/video0"           # 板端没得选：只接 CSI 摄像头
+        if platform == OHOS:
+            from app.adaptation.camera.ohos import OhosCameraAdapter
+            return OhosCameraAdapter(**kwargs)     # 未实现，open() 显式抛错
+        if platform == LINUX:
+            device = "/dev/video0"                 # 板端没得选：只接 CSI 摄像头
         else:
             from app.adaptation.camera.fake import FakeCameraAdapter
             return FakeCameraAdapter(**kwargs)
 
     if device.startswith("/dev/"):
+        if platform == OHOS:
+            # 设备节点在 OH 上没有可用实现，继续显式抛错而不是假装能用
+            from app.adaptation.camera.ohos import OhosCameraAdapter
+            return OhosCameraAdapter(**kwargs)
         from app.adaptation.camera.v4l2 import V4L2CameraAdapter
         return V4L2CameraAdapter(device=device, **kwargs)
 

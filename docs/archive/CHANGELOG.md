@@ -6,6 +6,67 @@
 
 ---
 
+## [Unreleased] - 2026-11-07（第六轮：产品代码路径上板——链在整帧层面也等价，但两个装配缺陷只有产品路径能发现）
+
+承上一轮：转换链已用我自己的探针跑对，但 `app.main → DetectionEngine → RknnRuntime` 这条**真实路径**从未在板上跑过。本轮把它推上板跑了一次，一个命令就炸。
+
+### Verified
+- **产品路径上板全绿**：`python3 -m app.main --backend rknn --model sfrnet_wired_fp16.rknn --camera moire_photo.jpg --frames 2` → `EXIT=0`，`BOOTING 完成 READY 耗时 4106ms`，两帧 `has_moire=1 coverage=0.997290 tiles=32 total_ms=96556 / 96615`。`RknnRuntime` 的加载/预热/NHWC 入/NCHW 出修正均已在产品代码上实跑验证（不只是探针）。
+- **跨后端同图对照（本轮最强证据）**：同一张图、同一套滑窗与判定，只换后端与机器——板端 rknn fp16 coverage **0.997290** vs x86 torch fp32 **0.997286**，差 4×10⁻⁶。等价范围从“运行时边界”扩到了滑窗坐标、尺寸准入填充、余弦窗融合、双门限判定全链路。
+- **延迟量纲修正（上一轮自己写错了）**：§14.4 的 2.83–3.15 s 是**单块 512×512**，我一直当“单帧”写。整帧 2275×1279（32 块）实测 **96.6 s**（板端）/ 5.38 s（桌面 GPU，168 ms/块，与 SDD §2 里 2026-11-05 的 163 ms/块吻合）⇒ 跨后端 18×，4K 外推约 340 s。SDD §2 那段“4K 13–22 s”的算术推算也被实测证伪（差 15–25 倍），错在拿 int8 峰值去除 fp16 的活 + 直接借“30–50% 利用率”。
+- **判定层实测（本轮最重的发现）**：干净屏摄截图也 `has_moire=True`，coverage **0.9991 / 0.9815**，比摩尔纹图 0.9973 还高。已用代码证伪四个候选归因：预处理口径（训练与推理都是 RGB [0,1]，上游 `predict.py` 可证）、tile 尺寸与训练 crop 不符（`train.py:188` 就是 512）、转换链误差（跨后端对齐 4e-6）、输出不是概率图（`BCEWithLogitsLoss` + `sigmoid>0.5`，确实是分割图）。`build/_probe_threshold.py` 扫描：thr=0.8 时正 0.8764 / 负上界 0.4119——**存在可行窗口，但起作用的是 coverage_threshold（需从 0.01 提到 0.5 量级）而不是 threshold**。**未改 `configs/default.yaml`**：产品判定口径属用户，且 3 张样本（两张还是屏摄截图）不构成标定。
+- **冒烟测试换了正确的解释器重跑**：用 `/home/plus/GpuTorch/bin/python` 跑 `tests/smoke_board_pipeline.py` → **42/42 通过**（上一轮用系统 python3，缺 cv2 根本没跑成）。
+
+### Fixed
+- **`detect_platform()` 把真板子判成鸿蒙**：旧判据含 `Path("/system/etc").exists()`，而 RK3576 厂商 Ubuntu 22.04 固件本身就带 `/system/etc/{firmware,lib}`（板上实测：`/etc/ohos_release` 不存在、`/system/etc` 存在、`ID=ubuntu`）。OH 特征收紧为只认 `/etc/ohos_release`，真 OH 硬件用 `MOIREGUARD_PLATFORM=ohos` 显式指定。
+- **`make_camera()` 无声丢弃调用侧的 `--camera`**：OHOS 分支排在函数最前面直接 return，根本没看 `device`——与它自己的 docstring 相矛盾。改为“显式 `device` 为准、平台只挑默认源”，并保留两个 fail-fast（OH 无 device / OH + `/dev/video*` 仍显式抛未实现）。两个缺陷均入 `tests/smoke_board_pipeline.py` 新增的 §9（6 个用例，含反向护栏）。
+- 上一轮 `RknnRuntime` / `export_model.py verify()` 的输出布局修正（本轮由产品路径二次确认）：`if out.ndim==4 and out.shape[1]==1: transpose` 在单通道模型上必命中，会把对的 NCHW 摇成 NHWC 且无报错；engine 侧 `_infer_padded` 的 `out[:ph, :pw]` 兜底碰到错布局会广播成静默错值——两处都是“错了也不报”的类型。
+
+### Known Issues
+- **真实负样本一个也没有**，判定层标定卡在摄像头上（明天接入）。
+- **3.02 s/块为什么这么慢**未查（折合仅 0.12 TFLOP/s）：首要候选是 OneHot / 注意力 MatMul / reflect Pad / Resize 等算子落 CPU。
+- **摄像头 V4L2 实取帧从未跑过**（本轮用 FileCamera）；int8 仍未转。
+- router 判别力不足（BOARD_BRINGUP §13.3 第二层）依旧未解；但 §15.4 把它和判定层的问题分开了：就算路由全对，当前阈值下干净图也过不了“无摩尔纹”。
+
+### 元教训
+1. **探针验到的只是运行时边界**。“我的脚本能跑对”与“产品代码路径能用”之间隔着平台探测、适配器装配、参数传递。本轮两个缺陷都在 factory 装配阶段，探针天然绕过了它们。
+2. **量纲命名要先于数字本身**。“单帧 2.9 s”写进三份文档后才被实测推翻——因为跑的永远是单块输入，“帧”这个字从未被定义。今后延迟必须写明“/块”或“/整帧（N 块）”。
+3. **全部输入都报警不是阈值问题就是定义问题**。先从代码里查口径（训练/推理/上游脚本三处交叉证），再下结论；本轮若直接改阈值“修好”它，就是让判定层替转换链背了锅。
+
+---
+
+## [Unreleased] - 2026-11-07（第五轮续：转换链打通，但上一轮的归因只对了三分之一）
+
+摄像头与 SD 卡尚未接入，本轮全部工作在 x86 转换环境 + 已连着的 RK3576 上完成。结果：**`SFR_best.pth` 第一次变成能在板端 NPU 上跑对数据的 `.rknn`**。
+
+### Verified
+- **单算子探针扩到 12 个并跑齐**（`build/_probe_ops.py`）：9 个 `building done`，NonZero 明确拒收，RangeEqual/ConstantOfShape 是探针自身的“输出全常量”伪阳性。⇒ **abort 不在单算子里**，BOARD_BRINGUP §13.3 的第一层归因不完整。
+- **前缀二分定位**（`build/_probe_bisect.py`，1324 节点/1317 刀/单刀约 5 s）：轨迹 `666✘→336✔→501✘→418✔→459✘→438✘→428✘→423✘→420✔→421✘`，炸点 = 节点 #421 `/fission_module/Slice_1`，因其输入 `Pad(reflect)` 的 pads 走了 `Transpose→Reshape→Cast` 计算链、形状推不出来。
+- **全图符号形状普查**（`build/_probe_shapes.py`）：`sfrnet_static.onnx` 1324 个张量里 **944 个含符号维度**（Conv 269 / Relu 215 / Concat 150 …）；`onnxslim` 折叠后降到 **8/2010**（只剩 `fission_module` 的 OneHot/Cast depth 维）。
+- **转换成功**：`rknn.build(do_quantization=False)` 1 m 47 s、exit 0，产物 50,927,222 B。`E RKNN: Unkown op target: 0` ×5 出现但不致命。
+- **板端真模型首跑**（`build/_probe_eval_x86.py` + `build/_probe_board_run.py`）：`load_rknn`/`init_runtime` 均 ret 0（runtime 仍是厂商 2.1.0，未动系统库）；输出 `(1,1,512,512)` raw logits；**NHWC float32 喂法与 onnxruntime 参照最大相对误差 0.0059、相关系数 1.0000**，NCHW 喂法相关系数 0.0321；单帧 **2.83–3.15 s**。脚本化流水线产物（`sfrnet_wired_fp16.rknn`，md5 与手工产物不同）重测数字一致。
+- **静态化等价性**（上轮遗留的实测补完）：`build/static_frm_export.py` 4 图源 × 6 片共 24 片，最大相对误差 **0.000e+00**（逐 bit 等价）。
+
+### Fixed
+- **`rknn.config` 的 mean/std 口径搞错（本轮唯一的“完全错误”产出）**：直接把 ImageNet 的 0.485/0.229 烘进模型，而 rknn 的 mean/std **直接作用于喂入的张量、不会帮你 /255**（config 那行 `[0,255]` 警告就是这件事）。板端三种喂法输出量级全错（参照 mean -9.05 vs 板端 -68 / -13836 / -14076）。改为烘**恒等**预处理（`MEAN_BAKED/STD_BAKED`），int8 校准集随之改为“归一化后的 `.npy` 列进 txt”，保证校准域 == 推理域。
+- **`RknnRuntime` 输出布局处理错**：实测 `.rknn` 输出的已经是 NCHW `[1,1,H,W]`，而旧代码 `if out.ndim==4 and out.shape[1]==1: transpose` 在单通道模型上必命中，会把对的弄成 `[1,H,W,1]` 且无任何报错。收紧为 `shape[1]!=1 and shape[-1]==1` 才转；`warmup()` 统一成与 `infer()` 同布局；`export_model.py` 的 `verify()` 同一处逻辑同步修。（输入侧 permute 本来是对的：模型头的 `framework layout: NCHW` 指源框架布局，不等于运行时输入布局——我一度拿它怀疑要点 1，怀疑错了。）
+- **`_probe_ops.py` 的 `make()` 没有逐 case 容错**：一个探针导出抛异常就断了后面 9 个 case（上轮“只跑出 3/12”的真相）；同时修掉 ScatterND 探针在 batch=1 上索引越界。
+- **`_probe_bisect.py` 把 SIGABRT 当成 exit 134**：`subprocess.returncode` 对信号是 **-6**，导致基线误判为“全图没复现 abort，前提不成立”。封装 `aborted()` 后二分才收敛。
+- `export_model.py`：`rknn` 子命令现在会先数符号维度、非 0 自动跑 `onnxslim` 常量折叠（`--no-simplify` 留给取证）。
+
+### Known Issues（本轮没解决，别读成“全部搞定”）
+- **int8 仍未转过**：缺 100–200 张真实屏摄校准集（SDD §6 风险 #7 红线未动）。
+- **单帧 2.9 s** 与任何“实时”叙事直接冲突，已开为 SDD §6 风险 #11；目标帧率（Q3）需用户定口径。
+- **router 无判别力**（BOARD_BRINGUP §13.3 第二层）完全未解：静态化只保证“图上能算对”，不保证“选得对”。
+- 板上 `/root` 现在有本轮产物（两个 .rknn + `_probe_board_run.py` + `eval/`）；仓库侧 `build/models/*.onnx|*.rknn` 与 `build/probes/` 均不入库。
+
+### 元教训
+1. **“最小模型验链”会掩盖整图级障碍**：Conv 探针上板全绿，却盖住了“导出产物形状不静态”这个真正的拦路问题。验链结论只能用于它直接覆盖的那一层。
+2. **静默崩溃要用可二分的坐标系统去定位**，而不是用更多单算子测试堆经验：前缀二分 10 刀、约 1 分钟就落到具体节点，而单算子矩阵跑了 12 个一无所获。
+3. **警告行优先于推论**：`[0,255]` 那行警告第一次出现时被我当成量化相关的噪音，其实它就是本轮唯一那个致命错误的书面答案。
+
+---
+
 ## [Unreleased] - 2026-11-06（默认形态根本跑不出帧：适配器契约 + 错误恢复上限）
 
 上一轮收尾时做全形态实跑，`python -m app.main`（不带任何参数，正是 README 承诺的板端形态）跑 12 s 得到 **8 299 254 字节日志、0 条 frame**。顺这条线挖出一串真缺陷，全部先取证再改，性能相关的取舍带数字。
@@ -157,6 +218,102 @@ kernel 6.1.141 #52 SMP PREEMPT，`verifiedbootstate=orange` 未锁定）。
 关的只是 `appendWindowsPath=false`，绝对路径 `/mnt/c/Windows/System32/...` 从头就能跑。代价是：差点把"取证"这项一次性动作
 推回手工，并把一条错误的环境结论写进文档。**判"某功能不可用"之前先去找它的开关本身，不要用一次调用失败反推配置。**
 
+### 烧录前复核（把状态从"待烧"推成"只差点【升级】"）
+- 镜像完整性**四处一致**：`unzip -t` 全量 CRC → 解压后 `md5sum` → 与包内 `MD5.txt` 及厂商 PDF 声明互验
+  → 复制到 `D:\rkflash\` 后用 Windows `Get-FileHash` 再算一遍。上轮欠的"解压后比对 MD5"已清。
+- **差点误判 V1B**：板上设备树自报 `Industio EVB7609 V1 Board`，一度被当成与 `_V1B_` 包冲突的证据。
+  查《Linux 使用手册》修订史才发现两件事：轴不同（"V1" 是 EVB 底板名，V1A/V1B 是 OH2 的 PCBA 版次），
+  且时间线对得上（文档自 V1.3/2025-08-25 起从 V1A 换 V1B，而板上出厂 Android 构建于 2025-09-19）。
+  **决定性证据**：待烧镜像 dtb 内的板级串 `Industio-EVB7609V1-VS1.0.0-250716` 与板上现行固件逐字符相同。
+  另：手头 14 个包全部标 `_V1B_`，根本不存在 V1A 备选——所以真正要验的是"这批包对不对"而不是"选哪个"。
+- 新增板端实证（均入 BOARD_BRINGUP）：**eMMC 容量 57.6 GiB**（标称 64 GB）——"4+64G" 从订单口径升级为板上实测；
+  出厂 Android 的 15 个 by-name 分区（含 `super`/`dtbo`/`vbmeta`）；从 `.img` 里 grep 出的目标分区表：
+  扁平 8 分区、`rootfs:grow` 起始 2416 MiB、**`userdata` 固定 2 GiB**。最后一条有设计含义：
+  要 persist 的数据一律落 rootfs（`/opt/moireguard`），不要往 userdata 写。
+- Windows 侧就绪：`D:\rkflash\` 下放了校验过的 `.img`、`RKDevTool.exe`、`DriverInstall.exe`。
+  `adb reboot loader` 可**免按 Recovery 键**直接进 Loader，十几秒后 Windows 就枚举到新设备。
+- ⚠️ **上一轮刚写下的"驱动本来就装好"当场被证伪**：那个结论只看了 ADB 态（`PID_0006` / `rk3576_u` / Status OK）。
+  一进 Loader，板子变成**另一颗设备** `PID_350E`（`USB download gadget`），Windows 报
+  `CM_PROB_FAILED_INSTALL`（代码 28）。**ADB 驱动与 Loader/Maskrom 驱动不通用**，"能 adb"推不出"能烧录"——
+  差点在 RKDevTool 里"看不到设备"上白耗一轮，已写回 BOARD_BRINGUP §5 步骤 1。
+- 两个驱动相关的纠正：① 代码 28 **不等于"机上没这个驱动"**——`pnputil /add-driver rockusb.inf /install`
+  回的是"已成功添加。（系统中已存在）"，驱动包本来就在仓库里，缺的只是**绑定到这颗设备**；
+  绑定后变 `Rockusb Device` / Status OK。② 厂商 `DriverInstall.exe` 从 WSL 互操作 `Start-Process`
+  会**静默退出**（日志空、什么都没装），不如一行 pnputil 直接解决。
+
+### 元教训：一次性提取的数据当场落盘，别信临时文件
+上轮用 `mutool` 抽出的 PDF 文本存在工作区外的路径，两次会话之间开发机漂移过：根 fs 从 `overlay 98 G`
+变成 `/dev/sdd 1007 G`、`/mnt/f` 整卷消失、沙箱内 `/tmp` 变只读，**临时文件全部丢失**，同一批 PDF 只能重抽
+（且 `mutool` 版本变了，`-F` 现在必须带格式参数，改用 PyMuPDF）。原计划把镜像放 F: 盘也因此改投 D:。
+规则：**从不可重下的资料里提取出的结论，当场写进被跟踪的文档**；工具链不要依赖未入库的中间产物。
+
+### 烧录完成，取证路线收口（板端 Ubuntu 态实测）
+
+【升级】已执行，出厂 Android 被替换。完整数据在 [BOARD_BRINGUP §10](../guides/BOARD_BRINGUP.md)，这里只记影响决策的部分：
+
+- **判别“烧成功没”不用看界面**：`adb devices -l` 的身份字段从 Android 态的 `rk3576_u` 变成
+  `product:occam model:Nexus_4 device:mako`（Rockchip Linux 镜像 libcomposite adbd 的默认 ID）。
+  SN `98fed70982ab4c63` **跨刷机存活**，没动用 RKDevInfoWriteTool。
+- **`/usr/lib/librknnrt.so` = 2.1.0** —— 上轮“出厂 Android 搜不到 runtime”的缺口在官方
+  Ubuntu 固件上补齐，Toolkit2 对齐口径正式定为 **2.1.0**（取证时要分系统做，不是“安卓路线不行”）。
+- **连带查出一个会真咬人的代码缺陷**：`build/export_model.py` 的 `--target` 缺省值仍是
+  早期误记的 `rk3588s`（函数默认值、argparse 默认值、docstring 示例三处都是），**照现有文档
+  原样敲命令就会导出错平台的模型，板上 `rknn_init` 必挂**。三处已改 `rk3576`；
+  `build/README.md` 钉上 `rknn-toolkit2==2.1.0`，部署示例用户名 `firefly` → `industio`（板上实测只有
+  `root` 与 `industio`）。
+- **容量与分区推算命中**：rootfs 分区 59,332,607,488 B = 55.25 GiB、`/userdata` 固定 2 GiB、
+  RAM 可见 3895 MiB。“要 persist 的数据写 `/opt`（rootfs）而不是 userdata”这条约束成立。
+- **跨系统对比延迟时要注意的两个差异**：CPU governor 是 `schedutil`（Android 态不是），
+  NPU 仍是 `rknpu_ondemand` —— 所以 **warmup 不是刷机可绕的开箱问题**。
+- **首帧实测现在阻塞在硬件**：`imx415` 驱动已注册（`driver version 00.01.08`、`detect lane 4`），
+  但强制 bind 读到 `Unexpected sensor id(000000), ret(-5)` —— I2C 上没人应答，**模组未接**；
+  V4L2 栈本身正常（73 个 `video*`、`media0-8`、`v4l2-ctl` 可用）。为判别此事我写过一次 sysfs bind，
+  probe 失败因此未建立绑定，状态可逆（§10.1 已交代）。
+- **推翻 SDD 的一处隐含假设**：官方固件里 `numpy`/`cv2`/`rknn-toolkit-lite2` **一个都没装**（只有
+  Python 3.10.12）。“随镜像预装”是我们构建镜像那一步的责任，不是拿到官方固件就自动成立。
+- 新增交付安全项：`adb shell` 直接给 root 且 adbd 开机即跑。量产/外场交付前必须关。
+
+### 元教训：改了文档就要 grep 到代码侧
+
+上一轮把芯片型号从 RK3588S 更正为 RK3576 时，**只改了 `.md`**。`export_model.py` 里那个被代码
+消费的默认值没动，于是仓库处于“文档说 3576、执行链默认 3588S”的分裂态，而且不报错——直到
+拿到板上才会以 `rknn_init` 失败的形式爆出来。规则：**更正一个会进入命令/配置的常量时，
+必须 grep 到代码与脚本，不能停在文档**；默认值比注释危险，因为它在没人看的时候也会生效。
+
+### 联网（板上有 WiFi）与一次自我推翻
+
+用户指出板上带 WiFi 模组后，上一小节刚写的“网络接入未解决”立即作废。实测全在
+[BOARD_BRINGUP §11](../guides/BOARD_BRINGUP.md)：
+
+- **链路已通并持久化**：芯片 **BCM43456**（走 SDIO + `dhd` fullmac，不是 `brcmfmac`），关联
+  `Xiaomi_432` 的 **5G ch36、−50 dBm**，DHCP `192.168.31.53/24`，NM 自动生成 profile 并开机自连。
+  外网：网关 7.3 ms、`223.5.5.5` 26 ms、`apt-get update` 退出码 0。
+- **部署路线解锁**：开发机 WSL `eth3 192.168.31.6/24` 与板子**同网段**，拿到 `SSH-2.0-OpenSSH_8.9p1`
+  横幅 → `build/README.md` 里的 scp/ssh 从“纸面流程”变成可执行（用户名已实测为 `industio`）。
+- **板端依赖现场补齐**：`python3-numpy 1.21.5`、`python3-opencv 4.5.4`、`iw`、`rknn-toolkit-lite2 2.3.2`
+  已装。同时明确：**现场能装不等于交付形态合格**，SDD §1.2 那行已补上“必须固化进镜像”。
+- **CLM blob 缺失查到根因**：`/lib/firmware/` 有 `fw_bcm43456c5_ag.bin` 但**没有**对应 CLM
+  （只有四个其他芯片的）→ 厂商打包漏件。真实代价不是报错而是 `iw reg get` 给出
+  **`country 00: DFS-UNSET` + 5G 全段 PASSIVE-SCAN**；本次能连不等于无风险，**也没拿别的芯片的 blob 冒充**。
+- **推翻了本会话上一步写进仓库的结论**：“板上 runtime = 2.1.0 → 转换端钉 `rknn-toolkit2==2.1.0`”。
+  实测发现 **PyPI 上 `rknn-toolkit2` 只有 2.2.0/2.2.1/2.3.0/2.3.2/2.5.0，`lite2` 只有 2.3.0/2.3.2/2.5.0，
+  两个都没有 2.1.0** —— 那条“指令”根本无法执行。已回改 SDD、`build/README.md`、`export_model.py`
+  三处，§9 该行重新打开。另实测：lite2 wheel **不自带** `librknnrt.so`（dlopen 系统的），而 2.1.0
+  导出了 `rknn_init`/`rknn_create_mem`，所以符号层无缺口；但 `get_sdk_version()` 必须经
+  `init_runtime` 后才有值 ⇒ **没真模型就不能定论**。内核侧 `RKNPU driver: v0.9.8`（未拿官方
+  配套表坐实，不作断言）。推荐先转一个 2.3.2 模型直接上板试，成则维持 2.1.0，失败再升级
+  `librknnrt.so`（升级属替换厂商系统库，已归入用户决策面）。
+- 取件通道实测：板上 `github.com` 直连超时（HTTP 000）但 `api.github.com` 返 200；开发机直连不通，
+  **经本地代理 `127.0.0.1:7897` 返 `200 Connection established`** → 老 wheel 可经开发机倒进板。
+- **凭据纪律**：WiFi PSK 只在一命令里用一次，**未写入任何文件、文档、提交或长期记忆**。
+
+### 元教训：实测值不等于可执行指令
+
+“读出 2.1.0”是真事实，“所以钉 2.1.0”是把事实直推成指令，中间那一步（**这个版本到底能不能取到**）
+我省了。同型错误在工程文档里很常见：正确的前提推出不可执行的命令。规则：**每条写进仓库的
+操作指令，都要当场验证它的可执行性**（包是否存在于源、渠道是否可达、命令是否存在于板上的
+busybox/dash）——本轮“板上 `/bin/sh` 没有 `time`”就是同一类小事。
+
 ---
 
 ## [Unreleased] - 2026-11-06（接通广播出口：常驻循环 → SSE）
@@ -297,6 +454,43 @@ kernel 6.1.141 #52 SMP PREEMPT，`verifiedbootstate=orange` 未锁定）。
 - 上游 `train.py:24` 的 `autocast(device_type='cuda:1')` 硬编码问题
 - 上游 `predict.py:42-43` 小图推理崩溃问题
 - 上游 FRM Router 100% 坍缩到 branch_1
+
+---
+
+## [Unreleased] - 2026-11-06（第五轮：转换链跑到了板子上，但阻塞换了名字）
+
+用户让“进行下一步”（摄像头与 SD 卡明日接入），于是把 §11.4 欠的转换判定实验一次跑完。
+结果：**版本链清了，FRM 挡住了**。详见 [BOARD_BRINGUP §13](../guides/BOARD_BRINGUP.md)。
+
+### Verified
+- **版本链判定完成（这是本轮真正要的）**：用最小 Conv 模型走完 `pth→ONNX→RKNN(2.3.2)→板上推理`。
+  板上回读到模型头 `toolkit version: 2.3.2, target platform: rk3576`，runtime 报
+  `Model version: 2.3.2 not match with runtime 2.1.0`（**仅 warning**），`init_runtime ret=0`，
+  `get_sdk_version()` = `API 2.1.0 (967d001cc8@2024-08-07) / DRV 0.9.8`，`inference()` 返回正常张量。
+  ⇒ 转换端用 PyPI 能装到的 2.3.2，板端保持厂商 2.1.0，**不需要替系统库**。上一轮拟的 A/B 两条路线各对一半：A 预计要替库、B 预计要去取 2.1.0 老 wheel，两个都不必。
+- `SFR_best.pth → sfrnet.onnx` 导出成功，torch-vs-onnx 相对误差 `6.95e-06`；`load_onnx` 返 0（570 节点全解析）。
+- 开发机不需要 Docker：`rknn-toolkit2==2.3.2` 有 cp312 x86_64 wheel，且自带 torch 依赖（连带拉进 2.4.0）。
+
+### Fixed
+- **`build/README.md` 里写的 `python build/export_model.py onnx …` 本身就跑不通**：从仓库根启动时 `sys.path[0]` 是 `build/`，`app` 包导不进来。补 `sys.path.insert(仓库根)`；另外依赖链里 `PIL` 未声明。
+- `export_model.py` 新增 `--no-quant`：出 fp16 产物，不需校准集。这不是为了方便，是**实验设计需要**——仓库里没有合规校准集（`load_calib_images` 自己写着“必须真实屏摄图，禁用合成图”，而现在只有 4 张非摄像头图），用 int8 做版本兼容性判定会直接违反 SDD §6 风险 #7。fp16 产物照样带 toolkit 版本头，兼容性检验效力不受影响（SDD §6 风险 #7 本来就把 fp16 列为合法回退）。
+- `build/README.md` 第 ⑤ 条部署示例里**残留的第三处 `ssh firefly@`** 更正为 `industio@`（上一轮我只改了 scp 那一行，同一个错误在不同行重复出现）。
+
+### Known Issues（新增与修正）
+- **当前 SFRNet 转不出 .rknn**。不是版本问题，是 FRM 硬路由：
+  `sfrnet.onnx` 在 `build()` 的 `fold_constant` 约 30% 处 **SIGABRT（exit 134）且无任何 Python 栈**；
+  用单算子探针（`build/_probe_ops.py`）隔离出元凶：`Conv`/`ArgMax` 均能 build，`NonZero` 直接被拒
+  （`The input 0 of NonZero need to be constant! It will cause the graph to be a dynamic graph!`）。
+  来头：`upstream/sfr/FRM.py:88-99` 的 `(preds == i).nonzero()` + `if len(idx) > 0` + `output[idx] = …`。
+- **比转不了更危险的第二层**：trace 会把路由决策钉死在 dummy 上。ONNX 直方图 `NonZero=4 / ScatterND=4 / Equal=4 / ArgMax=4 / Range=4` 刚好等于“4 个 block × 1 条分支”（FRM 实例仅 1 个），即其余 3 条专家分支根本没进图。实测**60 个真实切片共 240 次决策：`{专家1: 196, 专家3: 44}`，14/60 个切片的路由与 dummy 不同** ⇒ 当前 ONNX 对这些切片是语义错的。上面那条 6.95e-06 自检发现不了，因为自检用的就是同一个 dummy。
+- **对本文已有条目的修正**：L395“上游 FRM Router 100% 坍缩到 branch_1”不够准确——整帧 512×512 输入（含 5 种内容）确实恒选专家 1，但细粒度切片下有 18% 走专家 3，且 softmax 接近均匀（top1-top2 差仅 0.018–0.054，四分类均匀为 0.25）。即“判别力不足 + 整帧层面近似恒定”，不是硬坍缩。已同步修正 SDD Q9。
+- 上一条 L389（“`build/` 目录仍不存在，转换链未跑通；建议 Docker Ubuntu22.04 + py3.10”）**作废一半**：`build/` 早已存在，转换链也已实跑通到板端推理；且不需要 Docker / 不需要 py3.10（cp312 有 wheel）——但 cp312 换来两个自己的坑：`setuptools>=81` 删 `pkg_resources`、`onnx>=1.16` 删 `onnx.mapping` 且 **cp312 上 onnx≤1.15 无二进制 wheel**。
+
+### 元教训：自检样本不能和被冻结的那个选择同源
+上一轮记的是“实测值不等于可执行指令”（从 `librknnrt=2.1.0` 推“钉 toolkit2==2.1.0”）。
+本轮是它的姊妹条：**“用 dummy 自己验 dummy”永远报绿**。torch-vs-ONNX 一致性只要复用导出时那个输入，
+对任何“数据相关控制流被 trace 常量化”的模型都只能证明图结构没算错，**证明不了分支覆盖**。
+另半条同样便宜：`RKNNLite` 没有 `.forward()` 只有 `.inference()`，我把接口名写错时差点把它当成版本不兼容的证据——失败现象要先归因到工具层还是模型层，再决定方不方便下结论。
 
 ---
 

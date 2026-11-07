@@ -7,6 +7,7 @@
   R2/R1 画面回传非阻塞 + 单槽覆盖
   引擎广播出口 IResultSink：限帧循环也广播、热路径不编图像、坏订阅端不拖死循环
   适配器契约：grab(timeout_ms=…) 接得住、合成帧真是 HxWx3
+  平台判别：Ubuntu 固件的 /system/etc 不误判为鸿蒙；显式 device 赢过平台默认
   错误恢复 §6.1：异常分类、固定 2s 退避、重试上限、日志有界、FATAL→退出码 1
   HTTP 错误响应：未鉴权 401 对大 body 也可见、排空后 keep-alive 可复用、Expect 不传体
   状态机：READY → DETECTING → READY；FATAL 布尔固定 False
@@ -479,6 +480,52 @@ try:
         print("  [跳过] 无 curl，Expect: 100-continue 分支未跑")
 finally:
     srv8.stop()
+
+# ── 9. 平台判别与取帧源优先级（2026-11-07 板端产品路径实测炸出来的）──
+# 首次用 `python3 -m app.main --camera xxx.jpg` 在 RK3576 上跑，FATAL：
+# “鸿蒙相机 Kit 适配待实现”。两个真缺陷：
+#   a) detect_platform 拿 /system/etc 当 OH 特征，而厂商 Ubuntu 固件本身就有
+#      /system/etc/{firmware,lib} ⇒ 真板子被判成 ohos；
+#   b) make_camera 的 OHOS 分支排在最前直接 return，调用侧显式传的
+#      --camera 被无声丢弃（与它自己的 docstring 相矛盾的语义）。
+print("[9] 平台判别 / 取帧源优先级（factory 是唯一允许平台分支的地方）")
+import pathlib
+
+from app.adaptation import factory
+
+_real_exists = pathlib.Path.exists
+# 厂商 Ubuntu 固件里真实存在的路径；/etc/ohos_release 在这块板上实测不存在
+OH_TRAP = {"/system", "/system/etc", "/system/etc/firmware"}
+
+
+def _board_like_exists(self, *a, **kw):
+    name = str(self)
+    if name in OH_TRAP:
+        return True
+    if name == "/etc/ohos_release":
+        return False
+    return _real_exists(self, *a, **kw)
+
+
+pathlib.Path.exists = _board_like_exists
+try:
+    plat = factory.detect_platform()
+    check("Ubuntu 固件的 /system/etc 不再误判为鸿蒙", plat != "ohos", f"platform={plat}")
+finally:
+    pathlib.Path.exists = _real_exists
+
+check("显式 device 赢过平台默认（鸿蒙判定下也不再吞 --camera）",
+      type(factory.make_camera(platform="ohos", device="/root/moire_photo.jpg")).__name__
+      == "FileCamera")
+check("鸿蒙无 device 仍显式抛未实现（修复不得把 fail-fast 软化成能用）",
+      type(factory.make_camera(platform="ohos")).__name__ == "OhosCameraAdapter")
+check("鸿蒙 + /dev/video* 也不假装能跑 V4L2",
+      type(factory.make_camera(platform="ohos", device="/dev/video0")).__name__
+      == "OhosCameraAdapter")
+check("板端不给 device 仍默认 /dev/video0",
+      type(factory.make_camera(platform="linux")).__name__ == "V4L2CameraAdapter")
+check("开发机不给 device 仍走假源（默认定型未被重排改动）",
+      type(factory.make_camera(platform="host")).__name__ == "FakeCameraAdapter")
 
 # ── 汇总 ────────────────────────────────────────
 n_ok = sum(PASS)

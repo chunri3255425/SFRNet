@@ -1,9 +1,12 @@
 """RKNN Runtime（板端 NPU，Purple Pi OH2 / RK3576，6 TOPS）。
 
 三个实现要点（SDD §4.1）：
-  1. 输入布局：RKNN 固定吃 NHWC，与契约 C1（NCHW float32）不一致 ——
-     转换在 infer 内部完成（permute + 量化 Scale 变换），不改动 IInputAdapter。
+  1. 输入布局：.rknn 吃 **NHWC float32** —— 已上板实测（docs/guides/BOARD_BRINGUP.md §14.4：
+     NHWC 喂法相对 onnxruntime 参照：相关系数 1.0000、最大相对误差 0.0059；NCHW 喂法相关系数 0.03）。
+     转换在 infer 内部完成（permute），不改动 IInputAdapter；归一化仍在调用侧（契约 C1），
+     因为转换时烘的是恒等 mean/std，.rknn 不会再帮你 /255。
   2. 输出域：.rknn 导出时不加 sigmoid，infer 返回 raw logits（契约 O1）。
+     实测输出已经是 NCHW [1,1,H,W]，**不要**再反向 permute。
   3. 量化校准集必须用真实屏摄图（build/calib/）。
 
 依赖：rknnlite（板上）或 rknn-toolkit-lite2。未安装时 load 抛 RuntimeLoadError——
@@ -51,19 +54,22 @@ class RknnRuntime(IRuntimeAdapter):
     def infer(self, tensor: np.ndarray) -> np.ndarray:
         if self._rknn is None:
             raise RuntimeLoadError("模型未加载")
-        # NCHW float32 → NHWC（RKNN 契约）
+        # NCHW float32 → NHWC（实测已确认 .rknn 要 NHWC）
         nhwc = np.transpose(tensor, (0, 2, 3, 1))
         outputs = self._rknn.inference(inputs=[nhwc])
-        # 恢复 [1,1,H,W] logits 布局
         out = outputs[0]
-        if out.ndim == 4 and out.shape[1] == 1:      # NHWC [1,H,W,1]
+        # 实测：单通道输出回来就是 [1,1,H,W]。旧写法“shape[1]==1 就 transpose”
+        # 会把对的 NCHW 摇成 [1,H,W,1]，下游后处理拿到错布局还不报错。
+        if out.ndim == 4 and out.shape[1] != 1 and out.shape[-1] == 1:
             out = np.transpose(out, (0, 3, 1, 2))
         return out.astype(np.float32)
 
     def warmup(self) -> None:
         if self._rknn is None:
             raise RuntimeLoadError("模型未加载")
-        self._rknn.inference(inputs=[np.zeros(IN_SHAPE, dtype=np.float32)])
+        # 与 infer 同一布局，否则 warm 的是另一条分支，耗时数字不可比
+        zeros = np.zeros(IN_SHAPE, dtype=np.float32)
+        self._rknn.inference(inputs=[np.transpose(zeros, (0, 2, 3, 1))])
 
     def unload(self) -> None:
         if self._rknn is not None:

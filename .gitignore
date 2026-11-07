@@ -94,3 +94,8 @@ runs/
 build/models/
 build/dist/
 build/calib/*.jpg
+
+# ---- 模型转换用的一次性 venv 与算子探针产物（不入库）----
+# venv 里装了 rknn-toolkit2 + torch（~1.5 GB），且里面有 onnx.mapping 兼容垫片，属于环境不属于代码
+.venv-convert/
+build/probes/
