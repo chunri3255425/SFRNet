@@ -78,6 +78,21 @@ $A shell 'cd /root && python3 -m app.main --backend rknn --model /root/sfrnet_wi
           --camera /root/moire_photo.jpg --frames 2; cat /var/log/moireguard/moireguard.log'
 ```
 
+同一件事的 **ssh 版（2026-11-08 起的主通道，比 adb 快且能并行）**：
+
+```bash
+# 公钥已装入板上 root:~/.ssh/authorized_keys，免密；板 IP 实测 192.168.31.53（DHCP，用前先确认）
+scp -r app configs samples/moire_photo.jpg root@192.168.31.53:/root/
+ssh root@192.168.31.53 'find /root/app -name __pycache__ -type d -exec rm -rf {} + ; \
+      cd /root && python3 -m app.main --backend rknn --model /root/sfrnet_wired_fp16.rknn \
+        --camera /root/moire_photo.jpg --frames 2; cat /var/log/moireguard/moireguard.log'
+```
+
+> 两条通道各自会坏的方式不同，别混为一谈：**adb 不响**先看板上 `cat /sys/class/udc/*/state`。注意 `configured` 只说明“有一台主机已配置它”，**不说明是哪一台**（2026-11-08 实测：本板 USB 已被接到另一台电脑上，所以本机 `adb devices` 永远为空，当时我误判成驱动问题）；
+> 确认线就在本机之后再查驱动绑定（`Tools/RK驱动/DriverAssitant_v5.13`）。**ssh/ping 不通**那么先看板上 `iw dev wlan0 link`——`wlan0 state UP` 不等于链路可用，实测过重启就好。
+>
+> **当前唯一可用通道是 ssh/scp**；要进 Loader/Maskrom 刷机必须到接管 USB 的那台电脑上做。详见 [BOARD_BRINGUP 16.4/16.5](../docs/guides/BOARD_BRINGUP.md)。
+
 ## 转换环境复现（2026-11-06 / 11-07 实测踩过的四个坑，都是真坑）
 
 ```bash

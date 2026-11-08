@@ -613,3 +613,100 @@ $A shell 'cd /root && python3 -m app.main --backend rknn --model /root/sfrnet_wi
   分阶段子图对照实测才能定，本轮未做。
 - 摄像头 V4L2 实取帧从未跑过（本轮用的是 FileCamera），明天接线后第一件事就是 `--camera /dev/video0`。
 - int8 仍未转；板上的 `sfrnet_sim_fp16.rknn` / `sfrnet_wired_fp16.rknn` / 探针脚本仍在 `/root`，不入库。
+
+## 16. 电源与连接器口径 + 关机可行性（2026-11-08 第七轮，外设未接期间的例行核对）
+
+### 16.1 供电不是 Type-C，是 12V DC 圆口
+
+厂商规格书 3.1 节原文（`docs/vendor/purplepi-oh2/IDO-Purple_Pi_OH2_开发板规格书.pdf`；本机没有 `pdftotext`，用 `mutool draw -F txt <pdf>` 抽取）：
+
+| 项 | 文档值 |
+|---|---|
+| 主板额定电压 | **12V** |
+| 电流要求 | 不小于 2A |
+| 可适应范围 | 9V–26V |
+| 供电接口 | J1 DC005（内径 2mm，外径 6.3mm），接电源适配器 |
+| Type-C | 全板仅 J7 一个：**OTG（USB3.0 OTG 带 DP），固件下载口**，不输入电源 |
+| 5V@2A | 是**对外输出**（USB3.2 Type-A 与 USB2.0 各 5V@2A；USB 外设总电流建议 ≤2000mA） |
+
+厂商两份文档互相冲突（如实记录，不裁决）：上手指南同一处写 **J2 DC-042 / 外径 6mm**，规格书写 **J1 DC005 / 外径 6.3mm**。
+两份一致的只有**内径 2mm**，选替换适配器按这一条为准，位号与外径都别信单份。
+
+顺带排除一个候选原因：额定 12V / ≥2A（约 24 W 供给能力）远大于推理负载，所以 15.5 里那个“3.02 s/块”**不可能是供电不足**，排查不用碰电源。
+
+### 16.2 我的一次错误归因（数据本身没错，结论却错了）
+
+板上 `/sys/class/power_supply/` 里有 `tcpm-source-psy-2-004e`，读到 `type=USB` `online=1`。据此我曾断定“主板由 USB 供电，拔电等于拔 adb 线”。
+**数据真，归因错**：那个 TCPC 观测的是 OTG 口的 VBUS（PC 侧 5V，用于 CC 与角色检测），不是主电源。同级的 `test_ac` / `test_usb` / `test_battery`
+是厂商桩节点，`online` 恒为 1，拿它们判电源拓扑只会得到假结论。
+
+纪律：**power_supply 节点存在 ≠ 该口在给系统供电**。供电口径以载板规格书为准，sysfs 只能回答“这根线在不在”。
+
+### 16.3 关机：软件能关，而且是真断电
+
+- PMIC 为 **RK806**（`rk806 1-0023: chip id: RK806, ver:0xa`），设备树子节点含 `shutdown-sequence` / `pmic-reset-func` / `pwrkey` / `vb-shutdown-sequence`；
+  全盘**没有** `gpio-poweroff` 节点，所以走的是 PMIC 硬件关机序列，不是只 halt CPU。
+- `/usr/sbin/{poweroff,reboot,halt,shutdown}` 与 `systemctl` 齐备。命令：`ssh root@192.168.31.53 "sync; reboot -p"`（adb 已移交另一台电脑，见 §16.5）。
+- 异常掉电可自恢复的直接证据（就在本次开机的 dmesg 里）：
+  `systemd-journald[312]: File /var/log/journal/.../system.journal corrupted or uncleanly shut down, renaming and replacing.`
+  同轮无 `EXT4-fs error`、无 I/O error、rootfs 从未被 remount 成只读，`Dirty` 仅 36 kB。
+  ⇒ 直接拔电的最大代价是丢一段 journald 记录，不是文件系统损坏；ext4 ordered 模式靠 journal 回放自恢复。
+- **拔插 DC 圆口 = 上电即自动开机，不需按电源键**（2026-11-08 实测闭环，用户口述物理动作 + 三重日志证据）：
+  1. `last -x` 里前一个 `industio :0` session 结束标记为 **`crash`**（没有 `shutdown` 记录 ⇒ 不是命令重启，是掉电）；
+  2. `journalctl -b -1` 最后一条是 `12:17:01` 的 CRON / pam session closed，**没有任何 “Stopping…” 序列就断了**；
+  3. 本次开机第一条是 `12:24:00 Booting Linux on physical CPU 0x0000000000`，中间无关机痕迹。
+  ⇒ 顺带解开 §16.4 那条“未知重启”：它不是 reboot，是拔插断电。
+- 由此 `rk806: ON: 0x40 OFF: 0x0` 有了实测锚点：在**确认是冷插电**的这次开机里读数就是 `0x40`（与上一次开机一致）。bit 含义仍未查手册，但它可以当“上电开机”的基准读数用了。
+- **仍未证的另一半（不能由上面外推）**：软件 `reboot -p` 主动把 PMIC 关下去之后再上电，是否同样自动起。两条路径的 PMIC 锁存状态不同，必须单独实测：ssh 跑 `sync; reboot -p` → 等它彻底断电 → 拔插 DC → 看起不起。
+- 附带发现：`last -x` 显示本次进入 `runlevel (to lvl 5)` 且 `industio :0  still logged in`，dmesg 里有 `input: rk805 pwrkey ... input0` ⇒ **出厂镜像带 GNOME 桌面 + 自动登录**（也解释了 §15 里 gnome-shell 的常驻 CPU 占用）。交付形态要关掉桌面与自动登录，属 §10.3 那类安全项。
+
+### 16.4 通道现状快照（会过期，别当长期结论）
+
+同一天里通道状态变过两次。两个时刻都记，因为“取一次就当结论”正是本轮出错的方式：
+
+| 通道 | 12:13（第一次核） | 13:05（板子重启后） |
+|---|---|---|
+| USB adb | `98fed70982ab4c63 device` 正常 | **本机看不到设备**（原因见 §16.5：USB 已移交另一台电脑） |
+| 网络 22 端口 | **不通**（ping 无回音，22 / 5555 连不上） | **通**，`sshd` 在 `0.0.0.0:22` 与 `[::]:22` |
+| 板侧 wlan0 | UP、`192.168.31.53/24`、`Xiaomi_432` ch11、rssi −42 | 同一地址，仍 UP |
+| 开发机侧 | `eth4 192.168.31.6/24`（WSL mirrored），`ip route get` 出接口正常 | 同 |
+
+板端 `uptime` 从 `1 day 14:27` 变成 `41 min` ⇒ **中间发生过一次重启**。于是两条旧结论同时作废：
+
+1. 我写的“断点因此落在中间那一段（AP 客户端隔离 / Windows 防火墙 / vSwitch 三选一）”**不成立**——重启就通，说明问题就在那一次运行状态里（板侧），而我只看了 `wlan0 UP` + 有 IP + 有路由就下了“板侧正常”。
+2. 下次再碰到 ping 不通，先查板侧 `iw dev wlan0 link` / ARP / 重连，而不是先怀疑防火墙。`wlan0 state UP` **不等于链路可用**（ dhd fullmac 在 rssi −42 的情况下仍可能不对高层交付）。
+
+### 16.5 adb 消失的真实原因：USB 已接到另一台电脑（同一件事我错连两层）
+
+13:05 走 ssh 回查板端：
+
+| 证据 | 读数 | 当时错在哪里 |
+|---|---|---|
+| `pgrep -a adbd` | `1425 /usr/bin/adbd` | 这条是对的：设备端 daemon 活着 |
+| `/sys/kernel/config/usb_gadget/` | `rockchip` | 这条是对的：gadget 已注册 |
+| `cat /sys/class/udc/*/state` | **`configured`** | **读数对、推论错**：它只说明“有一台主机已枚举并配置了它”，**不说明是哪一台** |
+| `systemctl is-enabled adbd` | 无 unit，`inactive` | 这条是对的 |
+
+由此得到的三层猜测均已被推翻：① “检查中途从枚举消失，属物理动作所致（拔线）”→ 错；② “断点在 Windows 侧 USB 驱动 / 接口绑定”→ 也错（虽然 `DriverAssitant_v5.13` 确实是常见原因，但这次不是）；
+**真实原因是用户把板子的 USB 线接到了另一台电脑上**，所以那台主机看到的是 `configured`，本机 `adb devices` 当然为空。这是本轮唯一一条只能由用户提供的信息——接的是哪台主机，板侧遥测看不出来。
+
+修正后的判据：`udc state=configured` + 本机 `adb devices` 为空 ⇒ **先问一句“线插在哪台机器上”**，确认就在本机之后再去查驱动绑定（DriverAssitant）；
+`state` 缺失或 `not-bound` 才该怀疑线与口。
+
+**操作后果（明天直接受影响）**：本机已经没有 adb 通道，唯一可用的是 ssh/scp。需要进 Loader/Maskrom 刷机的话，得到**接管 USB 的那台电脑**上做（§5 的烧录序列本来就是 Windows 侧操作，现在多一层：先确认线在哪）。
+
+### 16.6 主通道改成 SSH（本轮最有用的产出）
+
+板端 `PermitRootLogin yes`，root 口令登录可用；已将开发机公钥装入板上 `root:~/.ssh/authorized_keys`，之后一律免密：
+
+```bash
+ssh -o BatchMode=yes root@192.168.31.53 'id -un; uptime -p'   # 实测 KEY_LOGIN_OK，不回退到密码
+scp build/xxx root@192.168.31.53:/root/                       # 双向往返内容一致已实测
+```
+
+重置的那个口令 **不入库、不入文档、不入记忆**，只用于首登与装公钥；后续一律走密钥。想收回去只需删掉板上 `authorized_keys` 里那一行并改密码。
+
+沙箱的坑（下次还会咬）：WSL 里 `ssh`/`scp` 默认要碰 `~/.ssh` 与 `/tmp`，而 IDE 沙箱把 `~/.ssh` 挂成空 tmpfs、`/tmp` 只读，
+于是报 `Identity file ... not accessible` 与 `Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf`。
+对策：known_hosts 指到工作区内（`-o UserKnownHostsFile=build/.kh -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=no`，用完删），
+或在沙箱外执行；首次密码登录用 paramiko（GpuTorch 环境里有）最省事，它不读那些 ssh_config。

@@ -6,6 +6,36 @@
 
 ---
 
+## [Unreleased] - 2026-11-08（第七轮：电源口径纠正——我把 TCPC 的 VBUS 误读成了主电源）
+
+外设未接期间的一次例行核对：查通道、查关机能力、查供电规格。结论落 `docs/guides/BOARD_BRINGUP.md` 新增的 §16。
+
+### Verified
+- **USB adb 通道在**：`98fed70982ab4c63 device`，走 `Tools/ADB工具/adb_win/adb.exe`（WSL2 interop；C 盘未挂载但工作区内的 exe 能跑）。板端 `uptime 1 day 14:27`、rootfs `/dev/mmcblk0p8 ext4`（eMMC）、`/sys/block/` 无 mmcblk1 ⇒ **SD 卡仍未插**；`pgrep` 无残留推理进程，load ~1.0 全来自系统服务。
+- **软件关机是真断电**：PMIC **RK806** 设备树带 `shutdown-sequence`，全盘无 `gpio-poweroff` ⇒ 走硬件关机序列而非 halt CPU；`sync; reboot -p` 可用。
+- **主通道从 adb 换成 SSH（本轮最有用的产出）**：用户重置口令后首登成功，已把开发机公钥装入板上 `root:~/.ssh/authorized_keys`，之后 `ssh -o BatchMode=yes root@192.168.31.53` 实测 `KEY_LOGIN_OK` 且不回退密码；scp 双向往返内容一致。板端 `PermitRootLogin yes`、`sshd` 监听 `0.0.0.0:22` 与 `[::]:22`、`udc state=configured`。重置的那个口令不入库不入文档不入记忆。
+- **上电即自动开机，不用按电源键**（用户口述物理动作是**拔插 DC 圆口**，再加三重日志证据）：`last -x` 里前一个 `industio :0` session 结束标为 **`crash`**（无 `shutdown` 记录）；`journalctl -b -1` 最后一条在 `12:17:01` 且**没有任何 “Stopping…” 序列**；本次开机首条 `12:24:00 Booting Linux on physical CPU`。⇒ §16.4 里那条“未知重启”就是这次拔插，不是有人执行了 reboot。附带：`ON: 0x40` 现在可以当“上电开机”的基准读数（bit 含义仍未查手册）。
+- **异常掉电自恢复已有直接证据**：本次开机 dmesg 里就写着 `systemd-journal ... corrupted or uncleanly shut down, renaming and replacing`，且无 `EXT4-fs error` / 无 I/O error / rootfs 从未被踢只读，`Dirty` 仅 36 kB ⇒ 直接拔电的最大代价是一段 journald 记录，不是文件系统。
+- **供电规格（厂商规格书 3.1 节）**：额定 **12V**、电流不小于 2A、适应 9V–26V，经 **J1 DC005 圆口**（内径 2mm）接适配器；全板**只有一个 Type-C，是 J7 OTG（固件下载口），不输入电源**；文档里的 5V@2A 是对外给 USB 外设的输出。
+
+### Corrected
+- **推翻本会话上一步我自己的结论**：上一轮我说“供电是 Type-C，物理断电等于拔 adb 线”。`tcpm-source-psy-2-004e` 的 `type=USB online=1` 是真数据，但那个 TCPC 看着的是 **OTG 口的 VBUS**（CC/角色检测用），不是主电源；`test_ac`/`test_usb`/`test_battery` 是厂商桩节点，`online` 恒 1。纪律：**power_supply 节点存在 ≠ 该口在给系统供电**，供电口径以载板规格书为准。
+- 附带排除一个候选归因：额定 12V/≥2A（约 24 W）远大于推理负载 ⇒ “3.02 s/块”不可能是供电不足，排查不用碰电源。
+- 厂商文档自身冲突已记录不裁决：上手指南写 J2 DC-042/外径 6mm，规格书写 J1 DC005/外径 6.3mm，只有**内径 2mm** 两份一致。
+- **推翻本轮自己写的通道结论（同一轮内连错三层，详见 §16.4 / §16.5）**：①“网络断点落在中间那一段（AP 隔离 / 防火墙 / vSwitch）”——板子重启后直接通，问题就在那一次运行状态里；我当时只看了 `wlan0 UP` + 有 IP + 有路由就判“板侧正常”，**`state UP` 不等于链路可用**。②“adb 从枚举消失属物理动作所致（拔线）”——板端 `adbd` 在跑、gadget 已注册、`udc state=configured`，线确实没拔。③ 改口成“断点在 Windows 侧 USB 驱动 / 接口绑定”——**还是错**。最终答案只能由用户给出：**USB 线已接到另一台电脑上**。`configured` 只证明“有一台主机配置了它”，不证明是哪一台。
+
+### Known Issues
+- **本机已无 adb 通道（不是故障，是物理拓扑变了）**：用户把板子 USB 接到了另一台电脑，所以本机 `adb devices` 永远为空而板端一切正常。**现在唯一可用的是 ssh/scp**；要进 Loader/Maskrom 刷机必须到接管 USB 的那台电脑上做（§5 烧录序列多一层前置：先确认线在哪）。
+- **仍未证：`reboot -p` 之后重新上电是否同样自动起**——PMIC 锁存路径与冷插电不同，不能外推。实测法：ssh 跑 `sync; reboot -p` → 确认彻底断电 → 拔插 DC → 看起不起。
+- **出厂镜像带 GNOME 桌面 + 自动登录**（`runlevel to lvl 5`、`industio :0 still logged in`、`input: rk805 pwrkey`）：既解释了 gnome-shell 的常驻 CPU 占用，也是交付前要处理的安全项（归 §10.3）。
+
+### 元教训
+1. **拿到真数据不等于拿到真结论**：本轮错在把“检测到 VBUS”读成“由此供电”，而两份厂商 PDF 就在仓库里没翻。涉硬件规格先抽文档，sysfs 只做交叉验证。
+2. `docs/vendor/` 里的 PDF 用 `mutool draw -F txt <pdf>` 可直接抽文字（本机无 `pdftotext`），不必靠印象或网上查规格。
+3. **遥测有它的天花板：板侧看不出来“线插在哪台主机上”。** 本轮 `configured` 被我连读两次错（拔线→驱动），真因只能由用户提供。涉及物理拓扑的归因，**先把“接线现状”问完再下结论**，别拿一个中性读数去反推故障。
+
+---
+
 ## [Unreleased] - 2026-11-07（第六轮：产品代码路径上板——链在整帧层面也等价，但两个装配缺陷只有产品路径能发现）
 
 承上一轮：转换链已用我自己的探针跑对，但 `app.main → DetectionEngine → RknnRuntime` 这条**真实路径**从未在板上跑过。本轮把它推上板跑了一次，一个命令就炸。
