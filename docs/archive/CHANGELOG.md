@@ -6,6 +6,88 @@
 
 ---
 
+## [Unreleased] - 2026-11-09（第九轮：OH 侧 bring-up 收口——查清每小时重启的真实机理，工程主线退回 Ubuntu）
+
+新板烧 KaihongOS 5.0.1 后一路做到 SSH 与 WiFi 可用，但本轮最重的产出是一条**否决性事实**：系统每约一小时被强制重启一次，且板端解除不了。据此定系统选型，详情全部落在 [BOARD_BRINGUP §17](../guides/BOARD_BRINGUP.md)。
+
+### Verified（全部可在板上复核）
+- **每小时重启拿到三样本**：`build/watch_oh_reboot.sh` 每 30 s 采一次 `/proc/uptime`，周期分别为 229.68 / 3615.16 / 3617 s。并且做了独立预言：在 uptime=1360 s 时按「开机 +3615 s」预测下次重启约 16:54，实测本次开机 16:54:10——**命中**。周期按 uptime 计而非墙钟，所以校时不能解除。
+- 根因定为**授权未激活**：`licenseMonitor`(318) / `license_sa`(1037) / `khdeviceauth_service`(319) 在跑，hilog 报 `Read license data from file fail` 与 `usual.event.DEV_NOT_ACTIVATED`，激活需厂商三要素 OPR/HPR/CUS 加 SN。
+- WiFi 芯片身份闭环：SDIO `0x02d0:0xa9bf`，驱动读 F1 signature `0x15294345` ⇒ `chip:0x4345 rev:0x9 pkg:0x2` = **BCM43456C5（模组 AP6256）**，不是固件名暗示的 AP6275S。
+- **两条命令把 wlan0 拉起来**：`insmod` 带正确固件路径 + `/vendor/bin/ip link set wlan0 up` ⇒ `FW download and F2 ready is: 124 msec`、`dhd_open : Exit ret=0`；`wpa_supplicant` v2.10(nl80211) 起后真实扫出 20+ 热点，`Xiaomi_432` 达 −49 dBm（天线到位）。
+- **SSH 扛过一场真实重启**：`sshd` 由 init 自启（PID 354，STIME `15:53:53`），`0.0.0.0:22` 在听，`/etc/passwd` 仍 204 行且 root 哈希保留。由此修正一个默认假设：**落盘的改动不易失，模块加载才易失**。
+
+### Found（两个厂商缺陷，都不是硬件问题）
+- **缺陷 A：开机不加载驱动。** `/chip_prod/modules/bcmdhd_sdio.ko`（2,761,480 B）是全镜像唯一的 `.ko`，但四处 init 目录里搜 `insmod|modprobe|bcmdhd` **零命中** ⇒ `lsmod` 空、`/sys/class/ieee80211` 空、三个 SDIO 功能全无 driver 绑定。
+- **缺陷 B：固件放错分区。** 驱动按芯片名在 `/vendor/etc/firmware/` 找 `fw_bcm43456c5_ag.bin` / `nvram_ap6256.txt`，那里只有 43752/AP6275S 的文件；驱动要的那套实际在 **`/chip_prod/etc/firmware/`**（且时间戳 `2025-12-05` 比同目录其余 `2025-10-22` 新，像是后补过但补错了地方）。`clm_bcm43456c5_ag.blob` 两边都没。
+- 另查清：镜像里没有任何命令行 DHCP 客户端（`toybox --list` 无 `udhcpc`，全盘只有 `libdhcp_*.z.so`），IP 得靠 `netmanager` SA。
+
+### Corrected（本轮我自己说错的四处，同类错集中到一处记）
+- 「更像烧录后首启的一次性重启，不是定时器」——被 3615.16 s 直接否证。当时 session 2 已活过 1437 s，就该反向怀疑周期性，而不是急着定性。
+- 「板上没有 wpa_supplicant / udhcpc」——全在 `/vendor/bin/`。错因：判据用了 `which`，而 PATH 不含 `/vendor/bin`。**「找不到」得是搜索域的结论，不能是 PATH 的结论**。
+- 「SELinux 拦住了 `ip link set`」——那条 `Operation not permitted` 是驱动 `dhd_open` 失败回上来的，换对固件路径后 rc=0。把上层报错当权限拒绝，且没读同一时刻的 dmesg。
+- 「探测文件里已有完整 dmesg」——`dmesg | tail` 的管道写在引号外，`tail` 被 Windows 抢走，dmesg 整段丢失。本轮脚本改为 bash 直调 `hdc.exe`，管道整体交给板内 sh。
+
+### Decided
+- **工程主线退回 Ubuntu 22.04**（`IDO_PurplePiOH2_V1B_Ubuntu22.04_HDMI4K_250907R.img`，2026-11-06 已在本板实测烧录成功；打包 `update.img`，头 4 字节 `RKFW`，走 RKDevTool「升级固件」整包覆盖）。理由不是「鸿蒙不好」，而是每小时重启与「板端无人值守常驻服务」正面冲突；且项目旧决策本就把 OH 定为架构预留、不建议实际投入，§13.1 的版本链结论本来就在 Ubuntu 上得到。
+- **不做授权绕过**：`khlicense_monitor.cfg` 标了 `"critical":[1,1,10]`，杀掉它会连累整机立刻重启，比现状更糟；正路只有拿 SN 与 OPR/HPR/CUS 找厂商开通。
+- OH 镜像（`OH_251205_HDMI4K` 及两个 `.img` + MD5）均在本机保留，**选型可逆**。
+- **文档口径已跟改**：README / SDD / build/README 原先把 Linux 与鸿蒙当对等交付目标（“同时支持双系统”“双系统各构建一条流水线”），已全部改为“工程主线 Ubuntu 22.04，OH 仅架构预留”；四层架构与适配层抽象不动，“同一套代码”这个约束保留且新增一条实测支撑（风险 #13 的平台误判只改适配层即恢复）。SDD §6 新增风险 #14（授权门）并把 #3 / #4 降级为预留口径。`python3 build/check_docs.py` rc=0。
+
+### Known Issues
+- OH 侧 WiFi **本轮从未真实关联**（缺热点口令），只到接口级验证；不要把「能扫到」读成「能上网」。
+- 板内 RTC 慢约六个月（`Mar 27 2026` vs 真实 11 月），独立缺陷未修；任何按墙钟排程的逻辑上板前必须先校时。
+- `param get` 里存在明文的 `khdfx.remote.username` / `khdfx.remote.passwd`，属厂商固件凭据暴露面（值不入文档）。
+- `/mnt/d/rkflash/` 下含 root 口令哈希的中间文件（`passwd.cur` / `passwd.new` / `root_hash.txt`）仍在盘上未清（本轮用户未选清理）。
+
+### 元教训
+1. **周期性现象至少要覆盖两个周期再下结论**。单样本（229 s）促成的「一次性重启」判断错了整整一天，而它直接决定了系统选型。
+2. 板子里「找不到 X」有三层可能：PATH 不含它、搜索域不覆盖它、文本筛法骗人。先 `find / -name` 再下结论。OH 把可执行文件分散在 `/system/bin` 与 `/vendor/bin`，PATH 只给前者。
+3. 上层工具报 `Operation not permitted` 不等于权限拒绝；驱动类接口一定要与同一时刻的 dmesg 对时再推因。
+4. 跨 WSL/PowerShell 传参时，管道与引号的归属是首要风险：要么整体单引号交给板内 sh，要么取回本机再筛。
+
+---
+
+## [Unreleased] - 2026-11-08（第八轮：测试图集整理与编号——顺便查出一个滑窗小图缺陷）
+
+用户交入 `测试图片/`（494 张 / 2.1 GB）。先按请求写忽略规则，再整理编号；编号本身很轻，重的是审计翻出来的三件事。
+
+### Added
+- **`.gitignore` 新增 `测试图片/`**（沿用 `samples/`、`captures/` 先例：平目录忽略，不留 .gitkeep）。数据不入库，但入库两样东西：
+  `docs/dataset/test_images_manifest.csv`（494 行 / 80 K，含旧名、新名、拍摄时间、宽高、字节、md5）与 `docs/dataset/README.md`。
+  这样处理是因为：2.1 GB 不能进 git，但**没有清单的结论就是无源断言**，换机器即丢。
+- **`build/organize_images.py`**：`plan` / `apply` / `verify` / `revert` 四个动作。改名前先落清单、apply 前全量预检目标冲突、
+  verify 逐张重算 md5。只改名不改字节，凭清单可完整回滚。
+- 编号方案：`moire_0001..0291`（手机直出，按文件名时间戳）、`moire_0292..0301`（原编号系列）、`clean_0001..0193`。
+  **前缀即真值标签**，`glob("moire_*")` / `glob("clean_*")` 就能拿到带标签集合，不再依赖目录名。
+
+### Verified
+- 494 张**全部可解码**，无 0 字节、无内容重复（md5 分组 0 组）；`apply` 改名 494/494，`verify` 缺失 0 / md5 不符 0 / 残留 0。
+- 142 种分辨率；`宽 ≥3000` 的土规则（不看摩尔纹）精度 **100.0%**、对正样本召回 **96.7%** ⇒ 尺寸与标签近乎共线。
+- 按 `tile_size 512 / stride 256` 实算块数跨 **0–320**：`moire` 291 张恒 165 块，`clean` 多为 4 或 8 块；
+  对照值 `2275×1279 → 32 块` 与板端产品路径那次数值一致，公式可信。
+- **`SlidingWindowEngine.plan()` 小图越界（实跑复现）**：任一边 ≤512 而另一边 >512 时 `rows` 为空，`sliding_window.py:112` 的
+  `rows[-1]` 抛 `IndexError`（本批 15 张命中，多为 1280×4xx 窄窗口截图）；兜底分支 `sliding_window.py:100` 要求两边都 ≤512。
+
+### Corrected
+- 我上一轮报“负样本 193 张”时只数了磁盘现存，没核编号段 ⇒ 口径不完整：原批 **300**，缺 **107**，且散布在 0001–0300 每一段（不是尾部截断）。
+- 我一次统计输出“以 100% 精度识别 294/301”是自算错：那个档位混进 3 张 1280×3173/3775/**20835** 的滚动长截图。
+  改用宽度口径才是 291/291 = 100% 精度、96.7% 召回。数字来路没核对就念出来，是同一类错。
+- awk 里用 `"0001"` 当数组键、拿数字 `1` 去查，前导零让六段全报“有 0/50”（明明 193 张）。已改 `$1+0` 重跑。
+
+### Known Issues
+- **小图 `plan()` 越界未修**：`engine.py:248–252` 会包装成 `MoireEngineError("capture", ...)`，故推断为“该帧失败、循环不死”，
+  但该路径对外的 HTTP 状态码与日志表现**本轮未实跑验证**。一张普通窗口截图即可触发，无人值守设备属必修项。
+- **107 张缺失原因未澄清** ⇒ 若删除标准与“看起来有没有纹”相关，负样本会被系统性拉向容易判对，**本批不足以对外宣称误报率**。
+- 手机 4K 直出的摩尔纹空间周期 ≠ 板端 IMX415 采到的周期，归一化只保证内部可比；**明天接上摄像头后必须用实拍帧重标一次**。
+
+### 元教训
+1. **标定前先做几何审计**：块数分布、尺寸×标签交叉表、零块图，这三项任何一项没过，混池算出的指标都可能只是分辨率在起作用。
+2. `mtime` 是拷贝时间不是拍摄时间；顺序信息只在文件名里（`IMG_YYYYMMDD_HHMMSS`）。
+3. 大数据不入库时，**清单必须入库**：否则“数据集版本”这件事无法被任何后来者复核。
+
+---
+
 ## [Unreleased] - 2026-11-08（第七轮：电源口径纠正——我把 TCPC 的 VBUS 误读成了主电源）
 
 外设未接期间的一次例行核对：查通道、查关机能力、查供电规格。结论落 `docs/guides/BOARD_BRINGUP.md` 新增的 §16。

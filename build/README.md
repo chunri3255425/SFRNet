@@ -15,7 +15,7 @@ app/ 源码 ──③package_app.py──> build/dist/moireguard-board.tar.gz
                               │
                               ├──④ 镜像集成：Purple Pi OH2 Linux 根文件系统叠加
                               │     （buildroot/yocto recipe 或 dd 烧录后 SSH 解压）
-                              └──④ OH 镜像集成（image_ohos/，待 OH 方案确认）
+                              └──④ OH 镜像集成（image_ohos/，**已停做**：OH 仅架构预留，见 BOARD_BRINGUP §17.5）
                               ▼
                      可烧录镜像（.img）→ 烧录 → 上电即跑 → SSH 运维 / WiFi 看画面
 ```
@@ -27,7 +27,7 @@ app/ 源码 ──③package_app.py──> build/dist/moireguard-board.tar.gz
 | `export_model.py` | pth→ONNX→RKNN 转换 + 量化一致性比对 |
 | `package_app.py` | 板端运行包打包（免依赖安装，落盘路径见脚本内 `DEST`） |
 | `image_linux/` | Linux 侧集成产物（systemd 服务单元等） |
-| `image_ohos/` | OpenHarmony 侧集成（占位，待 OH 镜像方案确认） |
+| `image_ohos/` | OpenHarmony 侧集成（占位；**2026-11-09 选型已退回 Ubuntu，不再建设**，理由见 [BOARD_BRINGUP §17.5](../docs/guides/BOARD_BRINGUP.md)） |
 | `calib/` | RKNN 量化校准集：**100–200 张真实屏摄图**（可从 UHDMD 抽样；禁用合成图，见 SDD §6 风险 #7） |
 | `_probe_bisect.py` / `_probe_shapes.py` / `_probe_ops.py` | 转换失败取证三件套：前缀二分定位静默 SIGABRT / 符号形状普查 / 单算子隔离 |
 | `_probe_eval_x86.py` → `_probe_board_run.py` | 跨设备对照：x86 备输入与 onnxruntime 参照，板端加载 .rknn 跑两种布局 |

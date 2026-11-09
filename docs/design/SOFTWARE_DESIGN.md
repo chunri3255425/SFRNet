@@ -3,7 +3,7 @@
 > **仓库**：`https://github.com/chunri3255425/SFRNet.git`
 > **文档版本**：v2.3（锁定摄像头 IMX415；新增 SSH 运维通道与 WiFi 画面回传）
 > **状态**：架构基线
-> **部署形态**：带摄像头的开发板，同时支持 Linux 与鸿蒙（OpenHarmony）双系统
+> **部署形态**：带摄像头的开发板。**工程主线 = Ubuntu 22.04**；鸿蒙（OpenHarmony）仅作架构预留，不作为交付目标（选型依据见 [BOARD_BRINGUP §17.5](../guides/BOARD_BRINGUP.md)）
 
 ---
 
@@ -21,7 +21,7 @@
 
 | 项 | 规格 | 对本设计的影响 |
 |---|---|---|
-| 型号 | 触觉智能（Industio）Purple Pi OH2 | 厂商提供 Linux 与 OpenHarmony 双系统支持，契合本项目双系统要求 |
+| 型号 | 触觉智能（Industio）Purple Pi OH2 | 厂商同时提供 Linux 与 OpenHarmony 两套镜像，因此板子能承接双形态；但 OH 侧已实测撞上授权门（每 3615 s 强制重启，[BOARD_BRINGUP §17.1](../guides/BOARD_BRINGUP.md)），**工程主线取 Ubuntu 22.04**，OH 降为架构预留（见 §6 风险 #14） |
 | SoC | 瑞芯微 **RK3576**（4×Cortex-A72 + 4×Cortex-A53，另含 M0 协处理器）。**大小核频率已上电实测**：A72（`CPU part 0xd08`）档顶 **2208 MHz**、A53（`0xd03`）档顶 **2016 MHz**。⚠️ 本文早期版本把两档都写成 2.2 GHz，实测 **A53 到不了 2.2 GHz** | CPU 本身也有可观算力，可作 NPU 故障时的软回退；A72 代际低于 RK3588S 的 A76，软回退与 CPU 侧融合/后处理的吞吐需按此下调预期。A53 侧预算按 **2.016 GHz** 而非 2.2 GHz 估。实测来源见 [BOARD_BRINGUP §2](../guides/BOARD_BRINGUP.md) |
 | 内存/存储 | **4 GB + 64 GB eMMC**（订单 SKU：Purple Pi OH2 开发板 4+64G）。内存类型两处口径不一致：商品主图写"高速 LPDDR5"，系列规格页另见 LPDDR4/4X@4266。**已上电实测**：`MemTotal` = 3,990,676 kB（4 GB 吻合）；`dmc available_frequencies` = **534 / 1320 / 1968 / 2736 MHz**，`normal_rate` = 1968 MHz；`androidboot.fwver` 含 `ddr-v1.10-9071d8ccd4`。⚠️ 档位表里**没有 LPDDR5 应有的 3200+ 档**，最高仅 2736 —— **"LPDDR5" 说法不成立**；但板上读不到 DDR 类型节点（debugfs 未挂载、无 `/proc/ddrinfo`），**具体是 LPDDR4 还是 4X 仍不作断言**，要坐实只能取厂商 SDK 的 dts | 量化后模型与运行时占用 < 500 MB，余量充足；4 GB 内存需注意 4K 图融合缓冲（见 §6 风险 #1）。内存类型只影响实测吞吐预期，不改变任何接口设计。eMMC 代际已实测确认为 **5.1**（`mmc0: new HS400 Enhanced strobe MMC card`）；容量也已板端实证：`/sys/block/mmcblk0/size` = 120,832,000 × 512 B = **57.6 GiB**（标称 64 GB），与订单 SKU 相符。刷官方 Ubuntu 后两边再各自实测一次：`free -m` 可见 **3895 MiB**、rootfs 分区 **59,332,607,488 B = 55.25 GiB**（[BOARD_BRINGUP §10](../guides/BOARD_BRINGUP.md)） |
 | NPU | **6 TOPS INT8**（RKNN 生态，支持 INT4/INT8/INT16/FP16/TF32；片上 SRAM 1 MB）。**已实测调频档位**：`/sys/class/devfreq/27700000.npu` = **300–950 MHz** 八档（300/400/500/600/700/800/900/950），governor `rknpu_ondemand` | 推理后端锁定 **RKNN Runtime**；模型走 `pth → ONNX → RKNN` 转换链。TOPS 与 RK3588S 同为 6，但核数与微架构不同（公开资料对核数口径不一致，本文不作断言），单块延迟必须以实板实测为准。⚠️ governor 是 `ondemand`，意味着**冷启动首帧跑在低档**，任何延迟实测都必须先 warmup 再计时，否则数字不可比（与 `torch_runtime` 的 warmup 治理同一动机） |
@@ -59,7 +59,7 @@ RKNN Runtime 是纯 C 库，Python 侧通过 `rknn-toolkit-lite2`（板端推理
 
 | 组成 | 内容 | 说明 |
 |---|---|---|
-| 操作系统 | Linux 发行版 / OpenHarmony（Purple Pi OH2 官方镜像为基座） | 双系统各构建一条流水线 |
+| 操作系统 | **Ubuntu 22.04**（Purple Pi OH2 官方镜像为基座）；OpenHarmony 镜像保留可回烧，但不建流水线 | 只构建一条交付流水线；OH 侧适配代码保留，用于证明抽象层确实只收敛差异 |
 | 运行时 | Python 解释器 + **rknn-toolkit-lite2**（板端 NPU 推理） | 随镜像预装，不依赖联网；板上不装 PyTorch。⚠️ **“预装”是我们构建镜像那一步的责任，不是拿官方固件就有**：实测官方 Ubuntu 22.04.5 只有 Python 3.10.12（cp310 与 lite2 wheel 口径对齐 ✓），`numpy`/`cv2`/`rknn-toolkit-lite2` **均未安装**（BOARD_BRINGUP §10）。本轮已用 WiFi 经 apt/pip 现场补齐（§11.3），但**现场能装不等于交付形态合格**，这些件必须固化进镜像 |
 | 应用本体 | `app/` 打包后的检测程序 | 上电自启动（systemd / 系统服务） |
 | 模型资产 | 量化后的 **.rknn** 模型文件（由 `SFR_best.pth` 转换） | 随镜像固化于 `/usr/share/moireguard/models/` |
@@ -91,7 +91,7 @@ app/ 源码    ──打包──> 独立运行包（免依赖安装）
 | 项 | 决策 | 说明 |
 |---|---|---|
 | 开发板 | **触觉智能 Purple Pi OH2**（RK3576，4GB+64GB，NPU 6 TOPS） | 板型已锁定，见 §1.1；SoC 型号曾误记为 RK3588S，已按实购订单更正（订单为 OH2 4+64G 整板与 OH2 核心板+IMX415 摄像头各 2 件）；厂商 SDK（RKNN/RKISP/刷机工具）允许进入适配层与 `build/`，仍不允许进入逻辑层与模型层 |
-| 操作系统 | **Linux 与鸿蒙双系统，同一套代码** | 系统差异全部收敛到适配层，业务代码零分支；镜像构建各自一条流水线 |
+| 操作系统 | **工程主线 Ubuntu 22.04；鸿蒙仅架构预留，同一套代码** | 系统差异全部收敛到适配层，业务代码零平台分支——这一条不变，且已被实测验证：`detect_platform()` 误判厂商 Ubuntu 为 OH 后，靠适配层修正即恢复，逻辑层与模型层一行未改（[BOARD_BRINGUP §15.2](../guides/BOARD_BRINGUP.md)）；仅镜像构建流水线不再做两条 |
 | 开发语言 | **Python + PyTorch（开发）/ RKNN Runtime（板端）** | 板端推理走 NPU，加载 int8 量化的 .rknn 模型；板上不跑 PyTorch |
 | 摄像头接口 | 抽象为"取帧"能力 | Linux 走 V4L2（MIPI CSI 经 RKISP），鸿蒙走相机 Kit，上层无感知 |
 | 上电行为 | 应用自启动 | 烧录后无需登录 shell 手动拉起 |
@@ -654,8 +654,8 @@ SFRNet/
 
 | 本文声称 | 实际状态 |
 |---|---|
-| `device_io/ohos_io.py` | 未落地，鸿蒙侧仅有 `camera/ohos.py` 占位 |
-| `build/image_ohos/`、`build/calib/` | 目录不存在；鸿蒙流水线与 RKNN 量化校准集待 M1 |
+| `device_io/ohos_io.py` | 未落地，鸿蒙侧仅有 `camera/ohos.py` 占位；**已因风险 #14 的选型结论取消排期** |
+| `build/image_ohos/`、`build/calib/` | 目录不存在；`image_ohos/` 已随选型退回 Ubuntu 而停做（风险 #14），但 `calib/` 仍是缺口——int8 校准集待摄像头接入后补（风险 #7） |
 | `logic_layer/supervisor.py` | 无此文件，重试与降级已并入 `engine.py`（C-10~C-13） |
 | 网络出口（`adaptation/network/`） | 代码已可用（HTTP/SSE + token 鉴权），且常驻循环的逐帧判定现已真的接进 SSE（`--serve-net --loop`）；但 §1/§4.4 对外的正式承诺仍只有一个布尔量，是否升为正式输出通道待 Q4 |
 | 默认阈值 `threshold=0.5 / coverage_threshold=0.01` | **实测对任何输入都判有摩尔纹**（零内容图 coverage=1.0000），Q5/Q9 未解前不可作交付判据 |
@@ -668,8 +668,8 @@ SFRNet/
 |---|---|---|---|
 | 1 | 4 GB 内存与 4K 图融合缓冲 | 3840×2160 三张 float32 融合缓冲约 95 MB，加上多块推理的中间张量，峰值可控但无浪费空间 | 融合缓冲复用（SlidingFuser 预分配）；禁止同帧持有两份全图张量；4K 以上输入按 `max_pixels` 拦截 |
 | 2 | RKNN 对 ONNX 算子覆盖不全 —— **已实测坐实并已打通** | 两层障碍：① FRM 硬路由的 `nonzero` 被编译层明确拒收（动态图）；② 即使静态化了仍会 **SIGABRT、不报算子名**——真正主因是 `Pad`/`Slice` 的 pads/ends 走了 `Transpose→Reshape→Cast` 计算链，ONNX 形状推断不做常量求值，导出产物 **944/1324 张量含符号维度**（前缀二分定到节点 #421，[BOARD_BRINGUP §14.2](../guides/BOARD_BRINGUP.md)） | 两步都已落地：① 导出侧 mask-sum 静态化（24 片逐 bit 等价，不重训）；② `onnxslim` 常量折叠（符号维 944→8），`export_model.py rknn` 已默认自动执行。产物已在板端 NPU 跑对（相关系数 1.0000）。**教训：拿最小模型验链只能验“链”，验不出“图形状不静态”这类整图级障碍** |
-| 3 | 双系统同一套代码 | 需保证业务代码零平台分支 | 平台判断只允许出现在 `adaptation/factory.py` 一处 |
-| 4 | 鸿蒙 Python 运行时可用性 | 鸿蒙上跑 CPython 生态支持有限 | 备选：Python 独立进程 + IPC，由 ArkTS 壳展示结果；此路径下逻辑层代码完全复用 |
+| 3 | 双系统同一套代码 —— **口径已收窄为“架构预留”** | 不再是“两套镜像各自一条流水线”，而是只交付 Ubuntu；OH 侧保留适配代码作为抽象层的可验证证据 | 平台判断只允许出现在 `adaptation/factory.py` 一处；OH 分支不得引入业务代码里的 `if` |
+| 4 | 鸿蒙 Python 运行时可用性 —— **本轮新增实测旁证：连“联网”这一步都依赖厂商修正** | 鸿蒙上跑 CPython 生态支持有限；更根本的问题是 OH 镜像本身不干净：WiFi 驱动 `.ko` 在镜像里但无任何 init 加载它，固件路径又指错目录，两条补上才能把 `wlan0` 拉 UP（[BOARD_BRINGUP §17.2](../guides/BOARD_BRINGUP.md)） | 备选：Python 独立进程 + IPC，由 ArkTS 壳展示结果；此路径下逻辑层代码完全复用。但前提是先拿到授权激活（风险 #14） |
 | 5 | 上游模型无 Sigmoid 末端 | 输出是 logits 而非概率 | 契约 O1 保证下游统一施加 |
 | 6 | 上游 `predict.py` 小图推理崩溃（画布未随 pad 扩大） | 直接搬用会崩 | 逻辑层滑窗自行处理填充与裁剪，不复用该脚本 |
 | 7 | 量化对精度的影响 | 摩尔纹多为高频细密纹理，int8 量化敏感度未知，且校准集若用合成图会引入分布偏移（实测：模型对合成图输出近乎饱和，无区分力）。**当前仓库无一张摄像头采集的真实屏摄图**（只有 4 张网图/截图），所以 int8 路径实质上还未打开；本轮版本实验用的是 `--no-quant` 的 fp16 产物 | 校准集必须用真实屏摄图（摄像头接入后采集）；导出脚本内建"量化前后 logits 一致性比对"，相对误差 > 5% 降位宽或回退 fp16 |
@@ -679,6 +679,7 @@ SFRNet/
 | 11 | **NPU 实测延迟：单块 3.0 s、整帧 96.6 s（fp16）** | 两个量纲必须分开记：§14.4 的 2.83–3.15 s 是**单块 512×512**（当时把它当“单帧”写，低估了一个数量级）；产品代码路径实测 2275×1279（**32 块）端到端 96.6 s**（[BOARD_BRINGUP §15.1](../guides/BOARD_BRINGUP.md)）。照此 4K（112 块）约 340 s ≈ 0.003 fps | 待定目标帧率（§7 Q3）后才能定口径。优先级待查项：先查清是否大量算子落 CPU（折合有效吞吐仅 0.12 TFLOP/s，不到名义 fp16 峰值的一成），再谈 int8 / 降分辨率 / 抽帧。在量化与优化前，文档里不要出现“实时”字样 |
 | 12 | **判定层完全无标定：干净图也报“有摩尔纹”（实测，本轮新增）** | 产品路径跑三张真实内容图：摩尔纹照片 coverage 0.9973，**干净屏摄截图 0.9991 / 0.9815**——按现配置（threshold 0.5 / coverage_threshold 0.01）**布尔输出对任何输入都是 True**，与 Q5 早先只在零内容图上观测到的现象一致，本轮把它坐实到了真实内容。已排除三个候选归因：预处理口径（与 train.py 的 ToTensor/[0,1]/RGB 一致，上游 predict.py 可证）、tile 尺寸与训练 crop 不符（训练就是 512）、转换链引入误差（x86 torch 与板端 rknn 同图 coverage 对齐到 4e-6）。未排除：模型精度本身 + 负样本定义（干净截图充满了高频文本） | `build/_probe_threshold.py` 实测阈值扫描：thr=0.8 时摩尔纹 0.8764 vs 干净上界 0.4119（差 +0.4645）——**双门限能分开，但起作用的是 coverage_threshold（需从 0.01 提到 0.5 量级）而不是 threshold**。具体取值属产品口径，且 3 张样本不是标定；待摄像头接入后拿真实负样本重标（见 Q5） |
 | 13 | **平台误判：厂商 Ubuntu 固件被认成鸿蒙（已修）** | `detect_platform()` 拿 `/system/etc` 当 OH 特征，而 RK3576 厂商固件本身就带 `/system/etc/{firmware,lib}` ⇒ 真板子被判 ohos，`make_camera()` 又在 OHOS 分支里抢跑 return，**显式传的 `--camera xxx.jpg` 被无声丢弃**，最后以 `camera_open_fail×3` FATAL 收摊（[BOARD_BRINGUP §15.2](../guides/BOARD_BRINGUP.md)） | OH 判据收紧为只认 `/etc/ohos_release`（真 OH 硬件用 `MOIREGUARD_PLATFORM=ohos` 显式指定）；`make_camera()` 改为“显式 device 优先，平台只挑默认值”，同时保留 OH 无 device / OH+设备节点的显式抛错。两个缺陷已进 `tests/smoke_board_pipeline.py` §9 钉住 |
+| 14 | **OpenHarmony 侧授权未激活 ⇒ 每 3615 s 强制重启（本轮新增，已成选型否决项）** | 实测三个开机周期：229.68 s / 3615.16 s / 3617 s，且提前 40 min 的预测命中。周期按 **uptime** 而非墙钟计，所以**校时不能解除**；板端也不可停用——`khlicense_monitor.cfg` 写着 `"critical":[1,1,10]`，杀掉它会连累整机立即重启（[BOARD_BRINGUP §17.1](../guides/BOARD_BRINGUP.md)）。根因是设备授权未开通：hilog 里 `LicenseData size check failed` / `Read license data from file fail` / `usual.event.DEV_NOT_ACTIVATED` | **不做授权绕过**（无凭据也不碰）。处置：工程主线退回 Ubuntu 22.04（已实测可烧、镜像在本机）；正路是拿 SN 找厂商开通。OH 镜像与 MD5 均保留，**选型可逆**；拿到授权后 §17.2 两条 insmod 命令与 §17.4 sshd 配方可直接复用 |
 
 ---
 

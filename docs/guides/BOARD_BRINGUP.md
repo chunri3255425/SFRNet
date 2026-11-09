@@ -710,3 +710,108 @@ scp build/xxx root@192.168.31.53:/root/                       # 双向往返内�
 于是报 `Identity file ... not accessible` 与 `Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf`。
 对策：known_hosts 指到工作区内（`-o UserKnownHostsFile=build/.kh -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=no`，用完删），
 或在沙箱外执行；首次密码登录用 paramiko（GpuTorch 环境里有）最省事，它不读那些 ssh_config。
+
+## 17. OpenHarmony 侧 bring-up 三条硬结论，与工程主线退回 Ubuntu（2026-11-08～11-09 第九轮）
+
+一句话：新板烧 KaihongOS 5.0.1（API 14，kernel 6.1.75 #37）后链路能通、真权重能跑，但**系统每约一小时被强制重启一次**，且板端解除不了；据此把工程主线退回 Ubuntu 22.04（§17.5）。
+
+### 17.1 每小时重启：三样本 + 一次提前 40 分钟的预测命中
+
+取证做法（`build/watch_oh_reboot.sh`）：每 30 秒读一次 `/proc/uptime`，与上一读比对，回零即重启点，回零处那个秒数就是周期。
+
+| 第几程 | 开机时刻 | 观测到的 uptime 终点 | 判定 |
+|---|---|---|---|
+| 首启 | 22:03:08 | 229.68 s | 烧录后的一次性重启 |
+| 二程 | 22:07:09 | 3615.16 s | **一小时** |
+| 三程 | 15:53:53 | 3617 s | 复现 |
+
+三程这条是本轮补的，也是最有分量的一条：在 uptime=1360 s 时按「开机 +3615 s」预测下次重启约 16:54，随后实测本次开机时刻为 16:54:10，**命中**。
+
+由此钉死两条判据：
+
+- 周期按 **uptime** 计（3615 / 3617 两样本），不是墙钟 ⇒ **校时救不了**。板内 RTC 慢约六个月（`Fri Mar 27 16:57:12 CST 2026`，真实为 11 月）是另一条独立缺陷，任何按墙钟排程的逻辑上板前必须先校时。
+- 首启那 229 s 与后面的整点周期不是一回事。我此前说过「更像烧录后首启的一次性重启，不是定时器」，**这句是错的**，被二程的 3615.16 s 直接否证；当时 session 2 已活过 1437 s 就该反过来怀疑周期性，而不是急着给「一次性」定性。
+
+根因是**系统授权未激活**，证据链齐：`licenseMonitor`(318) / `license_sa`(1037) / `khdeviceauth_service`(319) 在跑；hilog 报 `[factory.cpp(200)] LicenseData size check failed` 与 `[license.cpp(417)] Read license data from file fail`；SystemUI 订阅 `usual.event.DEV_NOT_ACTIVATED`；`/system/etc/license/` 里是一整套按分辨率准备的未激活水印 PNG（因不接显示而 `createWaterMask fail for screen width or height invalid`，水印才没露出来）。激活需厂商三要素 `OPR90338461` / `HPR47075475` / `CUS44050207` 加 SN `2c45fe421ba5701d`。
+
+**不做的事及其理由**：不停用授权服务来「治」重启——`khlicense_monitor.cfg` 写的是 `"critical":[1,1,10]`，critical 服务异常会连累整机重启，杀掉它比每小时一次更糟；且这属于授权绕过，不在工程范围内。正路只有拿 SN 与三要素找厂商开通。
+
+### 17.2 WiFi：芯片、驱动、固件三样都在镜像里，缺的只是有人把它们接上
+
+先钉身份：SDIO 卡 `0x02d0:0xa9bf`（Broadcom），驱动读 F1 signature `0x15294345` ⇒ `chip:0x4345 rev:0x9 pkg:0x2`，即 **BCM43456C5，模组 AP6256**——不是规格书与固件名容易让人以为的 AP6275S。
+
+**缺陷 A：驱动 `.ko` 躺在盘上，开机没人加载。** `/chip_prod/modules/bcmdhd_sdio.ko`（2,761,480 B）是全镜像唯一的 `.ko`；而 `lsmod` 只有表头、`/sys/class/ieee80211` 为空、三个 SDIO 功能的 `driver` 链接全部不存在。在 `/system/etc/init`、`/vendor/etc/init`、`/sys_prod/etc/init`、`/chip_prod/etc/init` 四处搜 `insmod|modprobe|bcmdhd`，**零命中**。
+
+**缺陷 B：`/vendor/etc/firmware/` 放的是另一颗芯片的固件。** 驱动按芯片名去搜 `fw_bcm43456c5_ag.bin` / `nvram_ap6256.txt`，那里却只有 `fw_bcm43752a2_ag.bin` + `nvram_ap6275s.txt`（43752 / AP6275S 的）。驱动要的这套实际在 **`/chip_prod/etc/firmware/`**：`fw_bcm43456c5_ag.bin` 562,387 B、`nvram_ap6256.txt` 2,212 B、`config_bcm43456c5_ag.txt` 18 B，时间戳 `2025-12-05 16:42` 比同目录其余 `2025-10-22` 的文件新——像是后补过但补错了分区。`clm_bcm43456c5_ag.blob` 两个目录都没有，与 §11.2 属同一族问题，Linux 侧缺 CLM 的处置口径可参照。
+
+实测启用（两条命令，可逆，不落 flash）：
+
+```bash
+insmod /chip_prod/modules/bcmdhd_sdio.ko \
+  firmware_path=/chip_prod/etc/firmware/fw_bcm43456c5_ag.bin \
+  nvram_path=/chip_prod/etc/firmware/nvram_ap6256.txt
+/vendor/bin/ip link set wlan0 up        # 必须用 /vendor/bin 那份 ip，见 §17.3
+```
+
+```
+Time taken for FW download and F2 ready is: 124 msec
+[wlan0] dhd_open : Exit ret=0
+Register interface [wlan0]  MAC: 10:a5:62:1a:12:ea
+dhd_conf_set_country : Country code: CN (CN/38)
+```
+
+关联层是现成的：`/vendor/bin/wpa_supplicant` 是 **v2.10 且 `drivers:` 里有 nl80211**（内核 `CONFIG_CFG80211_WEXT is not set`，所以只能走 nl80211）。起起来后真实扫出 20+ 个热点，`Xiaomi_432` 在 2.4G ch11 与 5G ch36 上分别为 −53 / −49 dBm，说明天线已接到位。
+
+**没做成的一步要说清**：关联需要热点口令，本轮没拿到，因此**从未发生过一次真实连接**；「OH 侧 WiFi 能上网」目前只到接口级验证。另外镜像里确实没有任何命令行 DHCP 客户端（`toybox --list` 无 `udhcpc`，全盘 `find -name "*dhcp*"` 只有 `libdhcp_*.z.so`），IP 得靠 `netmanager`(596) 这个 SA 来发，兜底才用静态地址。
+
+### 17.3 本轮在 WiFi 上说错的三句（同一类错，集中记）
+
+| 说过什么 | 真相 | 错在哪一层 |
+|---|---|---|
+| 「板上没有 wpa_supplicant / udhcpc」 | `/vendor/bin/` 里 `wpa_supplicant`、`hostapd`、`wpa_cli`、完整版 `ip` 全都有 | 判据用了 `which`，而 PATH 不含 `/vendor/bin`。「找不到」必须是搜索域的结论，不能是 PATH 的结论 |
+| 「SELinux 拦住了 `ip link set`」 | 那条 `Operation not permitted` 是驱动 `dhd_open` 失败回上来的；换对固件路径后 rc=0 | 把上层报错当权限拒绝，且没去读同一时刻的 dmesg |
+| 「探测文件里已有完整 dmesg」 | `dmesg` 接 `tail` 的那条管道写在引号外，`tail` 被 Windows 抢走，dmesg 整段丢失 | 跨 WSL/PowerShell 传参时管道必须整体交给板内 shell；本轮脚本已改成 bash 直调 `hdc.exe` |
+
+同类旧错一并留档：我曾从 `ls /system/bin` 的文本里正则筛出 `dropbear` 字样就断言其存在，实际不存在——同一个筛法还害我误判过 shadow 文件与 `udhcpc`。
+
+### 17.4 SSH 从零跑通，且本轮验证了它能扛过重启
+
+§16.6 那套 SSH 是 Ubuntu 时代的；OH 侧此前完全没有 SSH，本轮从零建成，并且**赶上一场真实重启做了免费验证**：重启后 `sshd` 由 init 自启（PID 354，STIME `15:53:53`），`0.0.0.0:22` 在听，`/system/etc/init/sshd.cfg` 逐字读回一致，`/etc/passwd` 仍是 204 行且 root 行保留 `$6$…` 哈希。
+
+这修正了一个默认假设：**模块加载是易失的，落盘的改动不是**。`hdc target mount` 把 `/system` 转可写后写进去的东西进了 flash，重启仍在。
+
+配方里每一条都有实调依据，摘最容易被重试踩的：
+
+- `sshd.cfg` **刻意不写 `secon`、不标 `critical`**：OH 私有 SELinux 标签（如 `u:r:licenseMonitor:s0`）写错 init 会直接拒起；标 critical 则服务失败连累整机重启。
+- 启动必须给绝对路径 `/system/bin/sshd`，否则 `sshd re-exec requires execution with an absolute path`；且必须显式 `-f /system/etc/ssh/sshd_config`——该 build 的默认配置路径不是 `/etc/ssh/sshd_config`，`sshd -t` 不带 `-f` 会假报 `no hostkeys available`。
+- host key 复用厂商留下的 `/system/etc/ssh/id_rsa`（不叫 `ssh_host_*`，故必须显式 `HostKey`），权限收到 0600。
+- **`UsePAM no` 是必需的**：`/etc/pam.d/sshd` 里 `@include common-auth` 被注释掉，认证栈为空。而镜像**没有任何 shadow 文件**，口令哈希只能放在 `passwd` 第 2 字段；同时第 7 字段（登录 shell）原本全是 `/bin/false`，**两处必须一起改**，只改其一就是「设了密码也进不去」的半死状态。改哈希用 `openssl passwd -6`（`passwd`/`chpasswd` 在这镜像里不可用：前者要 tty，后者二进制不存在）。
+- root 的 home 字段原本为空 ⇒ 登录报 `Could not chdir to home directory`，设为 `/data/root`(0700) 解决。
+- 端到端登录实测走 `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`（本机无 `sshpass`），经 `hdc fport tcp:2222 tcp:22` 返回 `uid=0(root) context=u:r:su:s0`。
+- 原文件备份留在 `/data/passwd.bak.20261108`（7,499 B）作回退点。
+
+附带安全发现（如实记，不写值）：`param get` 里存在明文的 `khdfx.remote.username` / `khdfx.remote.passwd`。这属于厂商固件的凭据暴露面，若项目走 OH 交付需向厂商提出。
+
+### 17.5 系统选型：为什么退回 Ubuntu，代价与可逆性
+
+先对齐项目自己的旧账：`OpenHarmony 实施策略` 早已定为「仅为架构预留，实际开发不建议投入；Python 应用无法直接进 OHOS 镜像，需走独立进程 + IPC」；而 §13.1 那条版本链结论（转换端 2.3.2 ↔ 板端 `librknnrt.so` 2.1.0）**本来就是在 Ubuntu 上实测得到的**。所以退回 Ubuntu 不是推翻决策，是回到既定主线。
+
+| 判据 | OH（本轮现状） | Ubuntu（回退目标） |
+|---|---|---|
+| 授权门 | 未激活 ⇒ 每 3615 s 强制重启 | 无此机制 |
+| 无人值守定位 | **正面冲突**：推理进程、MQTT 会话、滑窗状态、日志缓冲每小时全断 | 满足 |
+| WiFi | 芯片/驱动/固件全在，但需手补两个缺陷才能起接口 | 手册原生 `nmcli` / NetworkManager 路径 |
+| RKNN 链路 | fp16 .rknn 已跑通（rel 0.0059 / corr 1.0000） | §13.1 结论原生适用，模型侧零重做 |
+| Python 应用 | 需独立进程 + IPC | apt + cp310 wheel 口径对齐 |
+| 工具链 | 无命令行 DHCP、无 shadow、PAM 被剔空 | systemd 常规生态 |
+
+代价与可逆性：
+
+- 重烧会**擦掉整盘含 userdata**。OH 上 `/data`（mmcblk0p12）53 G 仅用 240 M，内容主要是日志，用户已确认不撤。
+- OH 侧本轮成果（§17.2 两条命令、§17.4 整套 sshd 配方）会随镜像消失——所以必须先落到本节。
+- **可逆**：`/mnt/d/rkflash/OH_251205_HDMI4K` 与两个 OH `.img` 及 MD5 均在本机，随时能烧回去。
+- Ubuntu 那颗是打包 `update.img`：头 4 字节 `RKFW`，LBA1 含 `RKNS` / `FlashBoot`，内含 parameter / uboot / system / userdata；走 RKDevTool「升级固件」整包覆盖，比 §17 之前那次逐分区填 10 行简单。烧录源文件完整性锚点：**6,163,532,419 B**，`md5 = 8cdd8d825ea8976239a702b7586f3406`（Windows 侧用 `certutil -hashfile <路径> MD5` 对一眼再开烧）。
+- 烧录前提未变：只能在 Windows 侧做（WSL 不透传 USB 烧录设备），且一旦中途失败，必须**拔 12V ≥ 10 s + 按住 Recovery 上电**才能复位僵死的 mini-loader。
+- 仍要保留的说法：OH 侧不是「失败」而是「已验证到接口级并定位到两个厂商缺陷」。未推送的验证产物（真权重上板、整帧跨后端对照、两个装配缺陷修复与 42/42 冒烟）不因换系统而作废，它们是回答「能不能上鸿蒙」的实测依据。
+
+

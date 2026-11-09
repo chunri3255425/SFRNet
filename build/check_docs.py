@@ -10,7 +10,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS = ["docs/guides/BOARD_BRINGUP.md", "docs/design/SOFTWARE_DESIGN.md",
         "docs/design/TECHNICAL_DOC.md", "docs/design/CONTROL_LOGIC.md",
-        "docs/archive/CHANGELOG.md", "docs/ARCHITECTURE.md", "build/README.md", "README.md"]
+        "docs/archive/CHANGELOG.md", "docs/ARCHITECTURE.md", "build/README.md", "README.md",
+        "docs/dataset/README.md"]
 TYPO = ["呰", "跱", "跳后端", "面住", "阀值", "清算子", "风隙", "单算子探子", "呾",
         "兑底", "锅甲", "甲给", "跱后", "跳设备", "跳后端对照", "包拫", "最后一朵"]      # 均为本项目文档里真实写错过的字
 

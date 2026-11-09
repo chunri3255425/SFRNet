@@ -1,6 +1,8 @@
 # MoiréGuard - 摩尔纹视觉识别软件
 
-基于 SFRNet 的超高清摩尔纹检测软件。交付形态为**带摄像头的开发板上无人值守常驻运行的服务**（上电自启、出错自恢复、断电安全），同时支持 Linux 与鸿蒙双系统。
+基于 SFRNet 的超高清摩尔纹检测软件。交付形态为**带摄像头的开发板上无人值守常驻运行的服务**（上电自启、出错自恢复、断电安全）。
+
+> 🖥️ **系统口径（2026-11-09 起）**：工程主线为 **Ubuntu 22.04**（触觉智能 Purple Pi OH2 厂商镜像）。鸿蒙（OpenHarmony 5.0 / KaihongOS）**仅作架构预留、不作为交付目标**——板上未激活的授权门会每 3615 s 强制重启，与"无人值守常驻"正面冲突（[BOARD_BRINGUP §17.1](docs/guides/BOARD_BRINGUP.md)）；WiFi 也已验证到接口级但存在两个厂商侧缺陷（[BOARD_BRINGUP §17.2](docs/guides/BOARD_BRINGUP.md)）。四层架构与适配层抽象保持不变，切换系统只动 `adaptation/`。
 
 > 🧭 **架构基准**：以 [docs/design/SOFTWARE_DESIGN.md](docs/design/SOFTWARE_DESIGN.md) **v2.3** 为准。目录结构只在该文档 §5 维护一份，本文与 `docs/ARCHITECTURE.md` 均改为指针。
 
@@ -121,7 +123,7 @@ SFRNet/
 
 - **阈值恒判真**：默认 `threshold=0.5 / coverage_threshold=0.01` 下，纯黑/纯白/纯灰这类零内容图 coverage = 1.0000，即系统对任何输入都判"有摩尔纹"。权重确实生效（随机初始化 mean 0.438 vs 加载后 0.903），但输出存在系统性高偏置。SDD Q5/Q9 未解前，判定结果只能作相对比较，不可作交付判据。
 - **板端非实时**：4K 一帧量级 13–22 s，需裁剪 `d3` / 降输入分辨率 / 加大 stride / RGA 卸载，均需实测验证。
-- 鸿蒙侧仅 `camera/ohos.py` 占位，`device_io/ohos_io.py` 与 `build/image_ohos/` 未落地。
+- **OpenHarmony 侧不落地，已降级为架构预留**（选型依据见 [BOARD_BRINGUP §17.5](docs/guides/BOARD_BRINGUP.md)）：`camera/ohos.py` 仅为占位，`device_io/ohos_io.py` 与 `build/image_ohos/` 未落地，且不再有排期。若日后拿到厂商授权激活，§17.2 的两条 insmod 命令与 §17.4 的 sshd 配方可直接复用。
 
 ## 许可证
 
