@@ -85,6 +85,14 @@ samples/
 # 注意：这里只是不跟踪，**它支撑的阈值标定结论必须写进文档**，否则换机器就丢。
 测试图片/
 
+# 板端点板/烧录调试的一次性转储：解包固件 .img/MD5、hilog/syslog/wifi dump、
+# 以及 oh_passwd.txt / oh_shadow_probe.txt 这类凭据探针。全是过程件，结论已进
+# docs/，绝不能被 git add -A 卷进历史（既臃肿又泄密）。
+build/tmp_md5/
+
+# RKDevTool 点板时在仓库根留下的二进制配置残留，重开工具即再生，不入库。
+config.cfg
+
 # 日志
 logs/
 *.log
