@@ -1,0 +1,8 @@
+# YOLO Stage-1 屏幕检测数据配置（ultralytics 格式）
+# 单类任务，规范见同目录 README.md（SDD v2.4.1 §4.2）
+path: datasets/screen_detect   # 相对 SFRNet 仓库根
+train: images/train
+val: images/val
+
+names:
+  0: screen

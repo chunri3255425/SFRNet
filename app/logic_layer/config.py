@@ -59,6 +59,22 @@ class RelayConfig:
 
 
 @dataclass
+class CascadeConfig:
+    """两级级联门控（SDD v2.4.1 §3.3 / §4.2）。
+
+    Stage-1 YOLO 屏检：有屏（含灰区 prefer_screen）→ 短路出 screen_detected；
+    无屏 → Stage-2 SFRNet 全图判纹。P3：Stage-1 失败自动禁用级联，不致命。
+    """
+    enabled: bool = True
+    backend: str = "rknnlite"        # rknnlite=板端 / onnx=开发机
+    model_path: str = "/usr/share/moireguard/models/yolo_screen.rknn"
+    normalized_input: bool = False   # False=喂 0..255（归一化烘进 rknn）；ONNX 路径置 True
+    screen_conf: float = 0.5         # Stage-1 门限（待实拍标定，Q13）
+    gray_zone: float = 0.1           # 灰区宽度 [screen_conf-gray_zone, screen_conf)
+    gray_policy: str = "prefer_screen"  # 宁报不漏（v2.4.1 决议）
+
+
+@dataclass
 class ModelConfig:
     """模型配置"""
     active: str = "sfrnet_uhd"
@@ -77,6 +93,7 @@ class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     relay: RelayConfig = field(default_factory=RelayConfig)
+    cascade: CascadeConfig = field(default_factory=CascadeConfig)
     max_pixels: int = 150_000_000  # 1.5亿像素上限
     # 网络出口参数原样透传: 逻辑层不解释 network 节，避免反向依赖适配层
     # (依赖方向: 逻辑层 → 模型层 → 适配层)。类型化由组合根转成

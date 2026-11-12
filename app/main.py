@@ -296,7 +296,26 @@ def _run_loop(platform: str, io: IDeviceIO, cm: ConfigManager,
     relay = ada.make_relay(enabled=cm.config.relay.enabled,
                            host=cm.config.relay.host, port=cm.config.relay.port) \
         if cm.config.relay.enabled else None
-    engine = DetectionEngine(camera, runtime, io, relay)
+    # [v2.4.1] Stage-1 级联门控装配：模型缺失/加载失败 = 非致命（P3），
+    # 记 WARN 后以 None 接入引擎，行为自动退化为 v2.3 全图路径。
+    gate = None
+    ccfg = cm.config.cascade
+    if ccfg.enabled:
+        try:
+            from app.adaptation.runtime.yolo_runtime import YoloRuntime
+            from app.model_layer.detectors.yolo_detector import YoloScreenGate
+            yrt = YoloRuntime(backend=ccfg.backend)
+            yrt.load(ccfg.model_path)
+            yrt.warmup()
+            gate = YoloScreenGate(
+                yrt, screen_conf=ccfg.screen_conf, gray_zone=ccfg.gray_zone,
+                gray_policy=ccfg.gray_policy, normalized_input=ccfg.normalized_input)
+            io.log("INFO", f"级联门控已启用: {ccfg.model_path} "
+                           f"conf>={ccfg.screen_conf} 灰区={ccfg.gray_policy}")
+        except Exception as e:
+            io.log("WARN", f"Stage-1 模型加载失败，级联禁用（非致命 P3）: {e}")
+            gate = None
+    engine = DetectionEngine(camera, runtime, io, relay, yolo_gate=gate)
 
     # ★ 命令行/平台配置在 bootstrap 之前交给引擎（bootstrap 会先加载模型）
     if not engine.bootstrap(cm.as_dict()):

@@ -28,6 +28,7 @@ from app.adaptation.relay.base import IFrameRelay
 from app.adaptation.runtime.base import IRuntimeAdapter
 from app.logic_layer.bootstrapper import Bootstrapper, DEFAULTS
 from app.logic_layer.decider import Decider
+from app.model_layer.detectors.yolo_detector import YoloGateError
 
 TILE = 512
 ALIGN = 32                      # 模型最深下采样 8 × 四象限 2×2 → 边长必须是 32 的倍数
@@ -51,7 +52,9 @@ class DetectionRequest:
 
 @dataclass
 class DetectionResult:
-    has_moire: bool | None = None   # None = 无有效结论（BOOTING/坏帧）
+    has_moire: bool | None = None   # None = 无有效结论（BOOTING/坏帧）；v2.4.1 起为派生兼容字段
+    result: str | None = None       # 三态对外承诺：screen_detected / has_moire / no_moire
+    stage1_conf: float | None = None  # Stage-1 最高置信度（仅级联开启时有意义，诊断用）
     coverage: float = 0.0
     elapsed_ms: float = 0.0
     frame_id: str = ""
@@ -72,16 +75,21 @@ class DetectionEngine:
 
     def __init__(self, camera: ICameraAdapter, runtime: IRuntimeAdapter,
                  io: IDeviceIO, relay: IFrameRelay | None = None,
-                 sinks: Sequence[IResultSink] | None = None):
+                 sinks: Sequence[IResultSink] | None = None,
+                 yolo_gate: "object | None" = None):
         """Args:
             sinks: 逐帧判定的广播出口（HTTP-SSE、串口、MQTT 皆为 IResultSink
                    实现）。由组合根注入，引擎不关心具体协议；空元组时广播
                    零成本（不构造 DTO、不做额外归约）。
+            yolo_gate: [v2.4.1] Stage-1 门控（YoloScreenGate），None=级联禁用
+                       （行为与 v2.3 完全一致）。由组合根按 cascade 配置装配，
+                       加载失败不致命（P3）。
         """
         self._camera = camera
         self._runtime = runtime
         self._io = io
         self._relay = relay
+        self._gate = yolo_gate
         self._sinks: tuple[IResultSink, ...] = tuple(sinks or ())
         self._sink_fail = 0
         self._decider = Decider()
@@ -241,10 +249,40 @@ class DetectionEngine:
         if bad:
             raise MoireEngineError("bad_frame", bad)
 
-        # 2. 尺寸准入 C-01：对齐 32 倍数（策略 A：零信息损失填充）
+        # 2. [v2.4.1] 级联门控 Stage-1（SDD §3.3 / §4.3.2 步骤 3.5）：
+        #    有屏幕（含灰区 prefer_screen）→ 短路出 screen_detected，不跑 SFRNet；
+        #    门控失败 → P3 降级：本会话内禁用级联，回退全图路径（不 FATAL）。
+        gate_conf: float | None = None
+        if self._gate is not None:
+            try:
+                gate_conf = self._gate.screen_conf_max(frame.data)
+            except YoloGateError as e:
+                self._gate = None
+                result.warnings.append("cascade_disabled")
+                self._io.log("WARN", f"Stage-1 门控失败，禁用级联回退全图路径（P3）: {e}")
+            else:
+                if self._gate.screened(gate_conf):
+                    result.result = "screen_detected"
+                    result.has_moire = False        # 派生兼容：screen_detected ≠ 摩尔纹
+                    result.stage1_conf = gate_conf
+                    result.elapsed_ms = (time.time() - t0) * 1000
+                    self._last_valid = result
+                    if self._relay is not None:
+                        try:
+                            self._relay.push(frame, result)
+                        except Exception:
+                            pass                    # R2：旁路非阻塞
+                    self._io.indicate(result.result)
+                    self._io.log("INFO",
+                                 f"frame={result.frame_id} result=screen_detected "
+                                 f"stage1_conf={gate_conf:.3f} total_ms={result.elapsed_ms:.0f}")
+                    self.state = "READY"
+                    return result
+
+        # 3. 尺寸准入 C-01：对齐 32 倍数（策略 A：零信息损失填充）
         padded, (pad_h, pad_w) = self._align(frame.data)
 
-        # 3. 分块决策 C-02 + 逐块推理 + 融合（同上：前向异常归 C-11）
+        # 4. 分块决策 C-02 + 逐块推理 + 融合（同上：前向异常归 C-11）
         try:
             logits = self._infer_padded(padded, req.tile_size)
         except MoireEngineError:
@@ -252,7 +290,7 @@ class DetectionEngine:
         except Exception as e:
             raise MoireEngineError("infer", repr(e)) from e
 
-        # 4. 裁回原尺寸 + 判定（唯一一次 sigmoid 在 Decider）
+        # 5. 裁回原尺寸 + 判定（唯一一次 sigmoid 在 Decider）
         if pad_h or pad_w:
             logits = logits[: frame.data.shape[0], : frame.data.shape[1]]
         # 双门限按**本次请求**生效：早期实现只用构造期的 Decider()，
@@ -263,6 +301,8 @@ class DetectionEngine:
         decision = self._decider.decide(logits, want_mean=bool(self._sinks))
 
         result.has_moire = decision.has_moire
+        result.result = "has_moire" if decision.has_moire else "no_moire"
+        result.stage1_conf = gate_conf
         result.coverage = decision.coverage
         result.max_prob = decision.prob_max
         result.mean_prob = decision.prob_mean
@@ -270,17 +310,17 @@ class DetectionEngine:
         result.elapsed_ms = (time.time() - t0) * 1000
         self._last_valid = result
 
-        # 5. 旁路：画面回传（非阻塞，失败不致命 R2/R5）
+        # 6. 旁路：画面回传（非阻塞，失败不致命 R2/R5）
         if self._relay is not None:
             try:
                 self._relay.push(frame, result)
             except Exception:
                 pass
 
-        # 6. 指示 + 日志一行（附录 B）
-        self._io.indicate(decision.has_moire)
+        # 7. 指示 + 日志一行（附录 B；v2.4.1 三态透传，物理映射见 device_io.base）
+        self._io.indicate(result.result)
         self._io.log("INFO",
-                     f"frame={result.frame_id} has_moire={int(result.has_moire)} "
+                     f"frame={result.frame_id} result={result.result} "
                      f"coverage={result.coverage:.6f} tiles={result.tiles} "
                      f"total_ms={result.elapsed_ms:.0f}")
         self.state = "READY"        # 恢复状态机（否则下一帧入口检查必然 busy）

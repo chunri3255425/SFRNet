@@ -12,7 +12,7 @@ import logging
 import os
 from pathlib import Path
 
-from app.adaptation.device_io.base import IDeviceIO
+from app.adaptation.device_io.base import IDeviceIO, result_to_bool
 
 CFG_DIR = Path("/etc/moireguard")
 OVERRIDE_CFG = Path("/var/lib/moireguard/override.yaml")
@@ -69,21 +69,22 @@ class LinuxDeviceIO(IDeviceIO):
     def log(self, level: str, msg: str) -> None:
         self._logger.log(getattr(logging, level.upper(), logging.INFO), msg)
 
-    # ── 布尔指示（GPIO sysfs）─────────────────
-    def indicate(self, has_moire: bool) -> None:
+    # ── 三态指示（GPIO sysfs；归约见 base.result_to_bool）──
+    def indicate(self, result) -> None:
+        positive = result_to_bool(result)
         if not self._gpio_ready:
             self._gpio_ready = self._setup_gpio()
         if self._gpio_ready and self._gpio_pin is not None:
             try:
                 (GPIO_BASE / f"gpio{self._gpio_pin}" / "value").write_text(
-                    "1" if has_moire else "0"
+                    "1" if positive else "0"
                 )
                 return
             except OSError as e:
                 self.log("WARN", f"GPIO 写入失败: {e}")
                 self._gpio_ready = False
-        # 降级：仅日志输出布尔
-        self.log("INFO", f"has_moire={has_moire}")
+        # 降级：仅日志输出三态原文（灯码细分属 SDD Q4 剩余项）
+        self.log("INFO", f"result={result}")
 
     def _setup_gpio(self) -> bool:
         if self._gpio_pin is None:
@@ -157,5 +158,5 @@ class HostDeviceIO(IDeviceIO):
     def log(self, level: str, msg: str) -> None:
         self._logger.log(getattr(logging, level.upper(), logging.INFO), msg)
 
-    def indicate(self, has_moire: bool) -> None:
-        self.log("INFO", f"has_moire={has_moire}")
+    def indicate(self, result) -> None:
+        self.log("INFO", f"result={result} positive={result_to_bool(result)}")

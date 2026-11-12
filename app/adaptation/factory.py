@@ -71,6 +71,7 @@ def make_camera(platform: str | None = None, device: str | None = None,
     Args:
         platform: detect_platform() 结果，None 则自动探测
         device:   取帧源。"/dev/video*" 走 V4L2；文件/目录走 FileCamera；
+                  纯数字（如 "0"）走笔记本/USB 摄像头；
                   留空在板端默认 /dev/video0，在开发机默认假源
     """
     platform = platform or detect_platform()
@@ -88,11 +89,20 @@ def make_camera(platform: str | None = None, device: str | None = None,
             from app.adaptation.camera.fake import FakeCameraAdapter
             return FakeCameraAdapter(**kwargs)
 
+    # 数字索引（如 "0"）→ 笔记本/USB 摄像头（Windows DirectShow / Linux V4L2）
+    if device.isdigit():
+        from app.adaptation.camera.file_camera import FileCamera
+        return FileCamera(source=int(device), **kwargs)
+
     if device.startswith("/dev/"):
         if platform == OHOS:
             # 设备节点在 OH 上没有可用实现，继续显式抛错而不是假装能用
             from app.adaptation.camera.ohos import OhosCameraAdapter
             return OhosCameraAdapter(**kwargs)
+        # Linux 平台使用 RK3576 专用适配器（处理 10-bit Bayer → RGB）
+        if platform == LINUX:
+            from app.adaptation.camera.rk3576 import Rk3576CameraAdapter
+            return Rk3576CameraAdapter(device=device, **kwargs)
         from app.adaptation.camera.v4l2 import V4L2CameraAdapter
         return V4L2CameraAdapter(device=device, **kwargs)
 

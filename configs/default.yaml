@@ -50,3 +50,15 @@ relay:
   jpeg_quality: 75
   downscale: 1080
   overlay_result: true
+
+# 两级级联门控（SDD v2.4.1 §3.3/§4.2）：有屏短路 screen_detected，无屏跑 SFRNet
+# 开发机覆盖示例：backend: "onnx"，model_path: "build/models/yolo_screen.onnx"，
+#               normalized_input: true（ONNX 路径除 255 在 gate 内做）
+cascade:
+  enabled: true
+  backend: "rknnlite"
+  model_path: "/usr/share/moireguard/models/yolo_screen.rknn"
+  normalized_input: false
+  screen_conf: 0.5        # 待实拍标定（Q13）
+  gray_zone: 0.1
+  gray_policy: "prefer_screen"   # 宁报不漏（v2.4.1 决议）

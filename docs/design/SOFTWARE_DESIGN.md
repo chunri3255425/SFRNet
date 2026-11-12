@@ -809,7 +809,7 @@ SFRNet/
 
 | 本文声称 | 实际状态 |
 |---|---|
-| `model_layer/detectors/yolo_detector.py`、`build/export_yolo.py`、`train/train_yolo_screen.py` | **未落地**（v2.4 新立项，代码待 M-A/M-B，见 §8 路线） |
+| `model_layer/detectors/yolo_detector.py`、`yolo_postprocess.py`、`build/export_yolo.py`、`train/train_yolo_screen.py`、`app/adaptation/runtime/yolo_runtime.py`、engine 级联门控/三态、`configs` cascade 节、`tests/test_yolo_cascade.py` | **代码已落地**（2026-11-12，级联冒烟 34/34 通过）；缺**真实权重**（待 M-A 数据训练 → M-B 转换上板），无权重时按 P3 自动降级 v2.3 行为 |
 | `device_io/ohos_io.py` | 未落地，鸿蒙侧仅有 `camera/ohos.py` 占位 |
 | `build/image_ohos/`、`build/calib/` | 目录不存在；鸿蒙流水线与 RKNN 量化校准集待 M1 |
 | `logic_layer/supervisor.py` | 无此文件，重试与降级已并入 `engine.py`（C-10~C-13） |
