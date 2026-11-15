@@ -43,6 +43,7 @@ assets/weights/*
 *.safetensors
 # 但保留权重目录结构占位
 !assets/weights/.gitkeep
+!assets/weights/yolo_screen_best.pt
 !weights/.gitkeep
 
 # 数据目录
@@ -124,3 +125,6 @@ build/calib/*.jpg
 # venv 里装了 rknn-toolkit2 + torch（~1.5 GB），且里面有 onnx.mapping 兼容垫片，属于环境不属于代码
 .venv-convert/
 build/probes/
+
+# YOLO 屏幕检测数据集：图片过大不入库，仅跟踪标注与配置
+datasets/screen_detect/images/

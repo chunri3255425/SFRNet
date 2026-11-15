@@ -1,0 +1,41 @@
+{
+  "version": "4.3.2",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "screen",
+      "score": null,
+      "points": [
+        [
+          1377.5833333333335,
+          798.0833333333337
+        ],
+        [
+          3880.916666666667,
+          798.0833333333337
+        ],
+        [
+          3880.916666666667,
+          2541.416666666668
+        ],
+        [
+          1377.5833333333335,
+          2541.416666666668
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "..\\..\\images\\train\\IMG_20261114_175715_1.jpg",
+  "imageData": null,
+  "imageHeight": 3072,
+  "imageWidth": 4096
+}

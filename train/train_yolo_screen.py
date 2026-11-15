@@ -60,7 +60,7 @@ def main() -> None:
         # 单类小数据集的合理超参；调参前先确认标注质量
         patience=30,
         seed=0,
-        workers=8,
+        workers=0,
         project=str(REPO_ROOT / "runs" / "yolo_screen"),
         name="v1",
     )

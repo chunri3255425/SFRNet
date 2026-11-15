@@ -1,0 +1,41 @@
+{
+  "version": "4.3.2",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "screen",
+      "score": null,
+      "points": [
+        [
+          20.967741935483673,
+          247.67741935483872
+        ],
+        [
+          1032.5806451612902,
+          247.67741935483872
+        ],
+        [
+          1032.5806451612902,
+          2343.1612903225805
+        ],
+        [
+          20.967741935483673,
+          2343.1612903225805
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "..\\..\\images\\train\\Screenshot_20261008_160619.jpg",
+  "imageData": null,
+  "imageHeight": 2376,
+  "imageWidth": 1080
+}
