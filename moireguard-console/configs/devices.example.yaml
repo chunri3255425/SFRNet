@@ -1,0 +1,11 @@
+# MoireGuard Console 设备清单模板（入库示例；真实 token 绝不写这里，见 docs/ARCHITECTURE.md §4/§6 C4）
+# 用法：复制为 devices.local.yaml（被 .gitignore 排除）后填真实值。
+devices:
+  - serial: "98fed70982ab4c63"
+    name: "实验室-1号板"
+    host: "moireguard-98fed70982ab4c63.local"   # mDNS（板端 §4.5.1），或改静态 IP
+    http_port: 8080
+    token_ref: "lab1"                            # 指向 configs/tokens/lab1（不入库）
+    relay:
+      enabled: false                             # 画面回传默认关，与板端 §4.5.2 R7 对齐
+      # host/port 由板端 relay 配置决定，F-A 冻结协议后回填

@@ -1,0 +1,30 @@
+# ── 依赖 / 构建产物 ──────────────────────────
+node_modules/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# ── 敏感配置（token / 设备凭据绝不入库，见 README §5、设计文档 §4.5.1）──
+configs/*.local.yaml
+configs/tokens/
+*.token
+.env
+.env.*
+
+# ── 日志 / 缓存 / 媒体暂存 ────────────────────
+logs/
+*.log
+.cache/
+# 从板端 relay 落地的临时帧/录像，属过程件不入库
+media/incoming/
+media/*.mp4
+media/*.jpg
+
+# ── 编辑器 / 系统 ─────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
