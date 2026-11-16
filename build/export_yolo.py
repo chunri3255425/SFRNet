@@ -27,6 +27,20 @@
   验收（SDD §8 M-B）：ONNX 参照与 RKNN 输出逐框 IoU >= 0.95；
   conf 相对误差 > 5% 或召回下降 > 2% → 回退 fp16（Q12）。
 
+⚠ 第二坑（2026-11-16 首次实跑踩到，ultralytics 8.4.213）：Detect 头的输出语义
+  在 8.4.x 里改过，且**同一个模型 eval()/training=True 走的不是同一条分支**：
+    - eval()        → _inference() → cat(dbox_DFL投影后, scores.sigmoid())，形状 [1,5,N]
+    - training=True → forward() 返回 dict {'boxes','scores','feats'}，其中 feats 是
+                      cv2/cv3 的**输入**（64/128/256 通道），根本不是 65 通道
+  所以「置 training=True 让 head 输出 raw 三尺度」这个老套路在 8.4.x 上必然失败
+  （报 cat() got (Tensor,int) / 输出通道 64 而非 65 / stride 元组为空）。
+  正确做法：**直接接管 Detect 层**，从 head.m.f 取三尺度特征，只跑 cv2[i]/cv3[i]，
+  按通道 cat 成 [1, 4*reg_max+nc, h, w] = [1, 65, h, w]，保持 DFL/sigmoid 之前。
+  decode_boxes 自己完成 DFL 投影与 sigmoid，所以导出侧必须"不处理"。
+
+⚠ 第三坑：head.m.f 是 [15,18,21]（三尺度来源层号），循环到 head 时局部变量 x
+  已被上一层覆盖，**不能用 x[i] 索引**，必须 ys[j] for j in m.f 显式取。
+
 ⚠ 所有性能/精度数字在实测前标注 [推算]，实测后回填并加 [实机]。
 """
 
@@ -58,36 +72,67 @@ def cmd_onnx(args: argparse.Namespace) -> None:
     yolo = YOLO(args.weights)
     det_model = yolo.model.eval()  # DetectionModel
 
-    class _RawHead(torch.nn.Module):
-        """裁掉 Detect 头的 decode 后处理，只返回三尺度 raw 特征图。"""
+    # 定位 Detect 头
+    head_idx, head = None, None
+    for i, m in enumerate(det_model.model):
+        if hasattr(m, "dfl"):
+            head_idx, head = i, m
+            break
+    if head is None:
+        raise RuntimeError("未找到 Detect 头（该权重不是 YOLOv8 检测模型？）")
+    if head.nc != NC or head.reg_max != 16:
+        raise RuntimeError(f"Detect 头 nc={head.nc} reg_max={head.reg_max}，"
+                           f"与约定 nc={NC} reg_max=16 不符")
 
-        def __init__(self, model):
+    class _RawHead(torch.nn.Module):
+        """裁掉 Detect 头的 decode 后处理，只返回三尺度 65 通道 raw 特征图。
+
+        输出约定与 yolo_postprocess.decode_boxes 严格对齐：
+          每个尺度 [1, 4*reg_max + nc, h, w] = [1, 65, h, w]
+          通道 0..63 = DFL 之前的 ltrb 离散分布（未做 softmax 投影）
+          通道 64    = 类别 logits（未过 sigmoid）
+        decode_boxes 自己完成 DFL 投影与 sigmoid，所以这里必须保持"未处理"。
+
+        实现要点（踩过的三个坑）：
+        1. 不能顺序喂单个 Tensor：Concat 层需要按 m.f 索引历史特征 → 复刻
+           BaseModel._predict_once 的 save/f 路由。
+        2. 不能让 Detect 走 forward()：8.4.x 的 forward 在 training 下返回
+           {'boxes','scores','feats'} 的 dict（feats 是 DFL 前的 cv2/cv3 输入，
+           不是 65 通道），eval 下返回已 decode 的张量。两版语义不一致。
+        3. 因此直接绕开 Detect.forward，用它的 cv2/cv3 分支手工拼 65 通道。
+        """
+
+        def __init__(self, model, head_mod, head_i):
             super().__init__()
-            self.model = model.model  # DetectionModel 的层列表
+            self.model = model.model
+            self.save_idx = set(model.save)
+            self.head = head_mod
+            self.head_i = head_i
+            self.nl = head_mod.nl
+            self.reg_max = head_mod.reg_max
+            self.nc = head_mod.nc
 
         def forward(self, x):
+            ys = []
             outs = []
-            y = x
             for m in self.model:
-                if hasattr(m, "f"):  # C2f/Concat 的索引包装
-                    y = m(y)
-                else:
-                    y = m(y)
-                if hasattr(m, "i") and m.i in getattr(self, "_head_idx", ()):
-                    outs.append(y)
+                if m.i == self.head_i:
+                    # 绕过 Detect.forward：从 head.m.f 显式取三尺度特征，
+                    # 只跑 cv2/cv3，输出保持 DFL/sigmoid 之前
+                    feats = [ys[j] for j in m.f]
+                    for i in range(self.nl):
+                        boxes = self.head.cv2[i](feats[i])     # [1, 4*reg_max, h, w]
+                        scores = self.head.cv3[i](feats[i])    # [1, nc, h, w]
+                        outs.append(torch.cat([boxes, scores], dim=1))  # [1,65,h,w]
+                    return outs
+                if m.f != -1:
+                    x = ys[m.f] if isinstance(m.f, int) else \
+                        [x if j == -1 else ys[j] for j in m.f]
+                x = m(x)
+                ys.append(x if m.i in self.save_idx else None)
             return outs
 
-        @staticmethod
-        def _find_head_idx(model):
-            # Detect 头是最后一个带 dfl 属性的模块
-            for i, m in enumerate(model.model):
-                if hasattr(m, "dfl"):
-                    return (i,)
-            raise RuntimeError("未找到 Detect 头（该权重不是 YOLOv8/YOLO26 检测模型？）")
-
-    raw = _RawHead(det_model)
-    raw._head_idx = _RawHead._find_head_idx(det_model)
-    raw = raw.float().eval()
+    raw = _RawHead(det_model, head, head_idx).float().eval()
 
     dummy = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
     outs = raw(dummy)
@@ -96,6 +141,12 @@ def cmd_onnx(args: argparse.Namespace) -> None:
         print(f"⚠ 实际输出 stride {strides} 与默认 {STRIDES} 不一致，"
               f"请同步修改 yolo_postprocess.STRIDES")
         sys.exit(1)
+    expect_c = 4 * 16 + NC
+    for s, o in zip(strides, outs):
+        if o.shape[1] != expect_c:
+            print(f"⚠ stride {s} 输出通道 {o.shape[1]} != 期望 {expect_c}"
+                  f"（4*reg_max+nc），decode_boxes 会解错")
+            sys.exit(1)
 
     torch.onnx.export(
         raw, dummy, args.out,
@@ -144,17 +195,25 @@ def _onnx_infer(onnx_path: Path, img: np.ndarray) -> list[np.ndarray]:
     return outs
 
 
-def _rknn_infer(rknn_path: Path, img: np.ndarray):
-    """开发机 RKNN 推理（x86 模拟器模式 init_runtime(target=None)）。
+def _rknn_infer(onnx_path: Path, img: np.ndarray):
+    """开发机 RKNN 模拟器推理（x86）。
 
+    ⚠ toolkit2 2.5.0 的限制：load_rknn + init_runtime() 不支持模拟器推理，
+    必须 load_onnx → build(do_quantization=False) → init_runtime()。
+    config 必须与 cmd_rknn 完全一致（std=255 烘归一化，A1 口径），
+    输入喂 0-255 原始像素，不能再除 255（否则双重归一化）。
     最终验收仍以板端实测为准（SDD 纪律：模拟器数字只是中间参照）。
     """
     from rknn.api import RKNN
 
     sess = RKNN(verbose=False)
-    sess.load_rknn(str(rknn_path))
-    sess.init_runtime()  # x86 模拟器
-    blob = (img / 255.0).astype(np.float32).transpose(2, 0, 1)[None]
+    sess.config(mean_values=[[0, 0, 0]], std_values=[[255, 255, 255]],
+                target_platform="rk3576")
+    sess.load_onnx(model=str(onnx_path))
+    sess.build(do_quantization=False)
+    sess.init_runtime()
+    # 模拟器 inference 要求 NHWC（工具会自己转 NCHW 喂图）；0-255 原始像素
+    blob = img.astype(np.float32)[None]  # HWC → NHWC
     return sess.inference(inputs=[blob])
 
 
@@ -200,7 +259,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         img = cv2.imread(str(p))[:, :, ::-1]  # BGR→RGB
         lb, _, _, _ = letterbox(img, INPUT_SIZE)
         ref = decode_boxes(_onnx_infer(Path(args.onnx), lb), nc=NC)
-        test = decode_boxes(_rknn_infer(Path(args.rknn), lb), nc=NC)
+        test = decode_boxes(_rknn_infer(Path(args.onnx), lb), nc=NC)
         ious, errs = _match_boxes(ref, test)
         all_iou.extend(ious)
         all_err.extend(errs)

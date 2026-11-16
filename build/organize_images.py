@@ -5,9 +5,14 @@
 普通屏幕截图 是编号 0001–0300 但磁盘只剩 193（缺 107），两套都没法直接被脚本当带标签的数据集。
 
 编号规则（只改名，不改任何字节）：
-    测试图片/摩尔纹图片/*    ->  moire_0001 ... moire_0301
-    测试图片/普通屏幕截图/*  ->  clean_0001 ... clean_0193
+    摩尔纹图片/*    ->  moire_0001 ... moire_0379
+    普通屏幕截图/*  ->  clean_0001 ... clean_0302
+    YOLO测试图片/*  ->  pool_0001  ... pool_0216
 同类内先排手机直出（按文件名时间戳升序），再排原编号系列（按编号升序）。扩展名保持原样。
+
+磁盘位置：原始图集自 2026-11-16 起住在 `data/raw/<子目录>/`（`data/` 整目录被 .gitignore 忽略）。
+已入库的 manifest 里 `old_dir` 写的仍是历史路径「测试图片/…」，由 resolve() 做一层重映射，
+**不要为了跑校验去改写清单**——它是那批数据的唯一留档。
 
 安全设计：
 - plan 先把「旧名 -> 新名 + md5 + 尺寸」写进 manifest CSV，才允许 apply。manifest 是唯一
@@ -33,13 +38,27 @@ from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(ROOT, "docs", "dataset", "test_images_manifest.csv")
+RAW_ROOT = os.path.join(ROOT, "data", "raw")
+LEGACY_ROOT = "测试图片"          # 清单里 old_dir 的历史前缀
 CATEGORIES = [
-    (os.path.join("测试图片", "摩尔纹图片"), "moire"),
-    (os.path.join("测试图片", "普通屏幕截图"), "clean"),
+    ("摩尔纹图片", "moire"),
+    ("普通屏幕截图", "clean"),
+    ("YOLO测试图片", "pool"),      # screen_detect 的图源池，无真值语义，仅作留档
 ]
+
+
+def resolve(rel_dir):
+    """把目录名（或清单里的历史 old_dir）映射到当前磁盘位置。"""
+    parts = [p for p in str(rel_dir).replace("\\", "/").split("/") if p]
+    if parts and parts[0] == LEGACY_ROOT:
+        parts = parts[1:]
+    return os.path.join(RAW_ROOT, *parts)
+
+
 RE_IMG = re.compile(r"^IMG_(\d{8})_(\d{6})")
-RE_NUM = re.compile(r"(\d+)\.(jpe?g|png)$", re.I)
-RE_NEW = re.compile(r"^(moire|clean)_\d{4}\.(jpg|png)$", re.I)
+RE_SHOT = re.compile(r"^shot_(\d{5})_(\d{8})_(\d{6})_")   # 板端/回传通道截帧
+RE_NUM = re.compile(r"(\d+)\.(jpe?g|png|webp)$", re.I)
+RE_NEW = re.compile(r"^(moire|clean|pool)_\d{4}\.(jpg|png|webp)$", re.I)
 COLS = ["category", "new_name", "old_dir", "old_name", "series",
         "capture_time", "old_number", "width", "height", "bytes", "md5"]
 
@@ -74,6 +93,12 @@ def series_of(name):
     if m:
         dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
         return 0, dt.isoformat(sep=" "), dt.strftime("%Y-%m-%d %H:%M:%S"), ""
+    ms = RE_SHOT.match(name)
+    if ms:
+        # shot_00001_20261108_153606_237.png：按序号为主、时间为辅排序，
+        # 否则会被末尾的毫秒后缀 _237 打乱成看似随机的编号
+        dt = datetime.strptime(ms.group(2) + ms.group(3), "%Y%m%d%H%M%S")
+        return 0, dt.isoformat(sep=" ") + "#" + ms.group(1), dt.strftime("%Y-%m-%d %H:%M:%S"), ""
     m2 = RE_NUM.search(name)
     return 1, "%06d" % (int(m2.group(1)) if m2 else 0), "", (m2.group(1) if m2 else "")
 
@@ -81,7 +106,7 @@ def series_of(name):
 def build_plan():
     rows = []
     for sub, prefix in CATEGORIES:
-        d = os.path.join(ROOT, sub)
+        d = resolve(sub)
         if not os.path.isdir(d):
             sys.exit("目录不存在：%s" % sub)
         names = sorted((n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n))),
@@ -137,7 +162,7 @@ def apply_():
     rows = read_manifest()
     targets = []
     for r in rows:
-        d = os.path.join(ROOT, r["old_dir"])
+        d = resolve(r["old_dir"])
         src, dst = os.path.join(d, r["old_name"]), os.path.join(d, r["new_name"])
         if os.path.exists(dst) and (not os.path.exists(src) or not os.path.samefile(src, dst)):
             sys.exit("目标已存在，拒绝：%s" % r["new_name"])
@@ -156,13 +181,13 @@ def verify():
     rows = read_manifest()
     miss, mismatch, leftover = [], [], []
     for r in rows:
-        p = os.path.join(ROOT, r["old_dir"], r["new_name"])
+        p = os.path.join(resolve(r["old_dir"]), r["new_name"])
         if not os.path.isfile(p):
             miss.append(r["new_name"])
         elif md5_of(p) != r["md5"]:
             mismatch.append(r["new_name"])
     for sub, _ in CATEGORIES:
-        for n in os.listdir(os.path.join(ROOT, sub)):
+        for n in os.listdir(resolve(sub)):
             if not RE_NEW.match(n):
                 leftover.append("%s/%s" % (sub.replace(os.sep, "/"), n))
     print("清单 %d 行 | 缺失 %d | md5 不符 %d | 未按新名命名残留 %d" % (
@@ -177,7 +202,7 @@ def revert():
     rows = read_manifest()
     done = 0
     for r in rows:
-        d = os.path.join(ROOT, r["old_dir"])
+        d = resolve(r["old_dir"])
         src, dst = os.path.join(d, r["new_name"]), os.path.join(d, r["old_name"])
         if os.path.isfile(src) and not os.path.exists(dst):
             os.rename(src, dst)
