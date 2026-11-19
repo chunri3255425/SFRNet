@@ -20,8 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.adaptation.camera.base import Frame, ICameraAdapter
 from app.adaptation.device_io.base import IDeviceIO, result_to_bool
+from app.adaptation.runtime.yolo_runtime import (
+    CHANNELS, YoloRuntime, YoloRuntimeError)
 from app.logic_layer.engine import DetectionEngine, DetectionRequest
-from app.model_layer.detectors.yolo_postprocess import decode_boxes, letterbox
+from app.model_layer.detectors.yolo_postprocess import (
+    REG_MAX, decode_boxes, letterbox)
 from app.model_layer.detectors.yolo_detector import YoloGateError, YoloScreenGate
 
 PASS = []
@@ -230,6 +233,57 @@ def t_v23_compat():
     check("indicate 收到三态", io.indicated[0] == "has_moire")
 
 
+# ── 7. YoloRuntime 布局归一 + 板端零 torch 依赖 ───────
+def t_runtime_layout():
+    print("\n[7] YoloRuntime：通道锚点 / _to_nchw / 板端可导入性")
+    # 常量对查：yolo_runtime 自己复制了一份 REG_MAX（为了不去 import 含 torch 的
+    # app.model_layer 包），两份值一旦分叉就会让 _to_nchw 静默失效。
+    check("CHANNELS == 4*REG_MAX+NC == 65",
+          CHANNELS == 4 * REG_MAX + 1 == 65, f"CHANNELS={CHANNELS}")
+
+    to_nchw = YoloRuntime._to_nchw
+    nchw = np.zeros((1, CHANNELS, 20, 20), dtype=np.float32)
+    check("NCHW 幂等（板端实测 RKNNLite 返 NCHW，不得盲转）",
+          to_nchw(nchw).shape == (1, CHANNELS, 20, 20))
+    nhwc = np.transpose(nchw, (0, 2, 3, 1))
+    check("NHWC 转回 NCHW", to_nchw(nhwc).shape == (1, CHANNELS, 20, 20))
+    try:
+        to_nchw(np.zeros((1, 8, 8, 8), dtype=np.float32))
+        check("无可定位时报错而非静默返错布局", False, "未抛异常")
+    except YoloRuntimeError:
+        check("无可定位轴时抛 YoloRuntimeError", True)
+    try:
+        to_nchw(np.zeros((1, CHANNELS), dtype=np.float32))
+        check("非 4 维输入报错", False, "未抛异常")
+    except YoloRuntimeError:
+        check("非 4 维输入抛 YoloRuntimeError", True)
+
+    # 反例回归：旧写法 `o.shape[-1] not in (65,)` 对真 NCHW [1,65,80,80]
+    # 因 80≠65 判真，误转成 [1,80,65,80] → decode_boxes 的 reshape 必炸。
+    real = np.zeros((1, CHANNELS, 80, 80), dtype=np.float32)
+    old_triggered = real.shape[1] not in (0,) and real.shape[-1] not in (65,)
+    check("旧规则对 [1,65,80,80] 判真（会误转走布局，坐实原 bug）",
+          old_triggered is True)
+    check("修复后对同一输入保持 NCHW",
+          to_nchw(real).shape == (1, CHANNELS, 80, 80))
+
+    # 静态护栏：本模块在板上连 import 都要能成功（板上不装 torch）。
+    import ast
+    repo = Path(__file__).resolve().parent.parent
+    src = (repo / "app" / "adaptation" / "runtime" /
+           "yolo_runtime.py").read_text(encoding="utf-8")
+    top_imports = []
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Import):
+            top_imports += [n.name for n in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top_imports.append(node.module)
+    banned = [m for m in top_imports
+              if m.split('.')[0] == "torch" or m.startswith("app.model_layer")]
+    check("yolo_runtime 顶层无 torch / app.model_layer 导入（板端可导入）",
+          not banned, f"banned={banned} all={top_imports}")
+
+
 if __name__ == "__main__":
     t_postprocess()
     t_gate_policy()
@@ -237,6 +291,7 @@ if __name__ == "__main__":
     t_engine_no_screen()
     t_engine_degrade()
     t_v23_compat()
+    t_runtime_layout()
     n_ok = sum(PASS)
     print(f"\n结果: {n_ok}/{len(PASS)} 通过")
     sys.exit(0 if n_ok == len(PASS) else 1)

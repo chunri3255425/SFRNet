@@ -6,6 +6,92 @@
 
 ---
 
+## [Unreleased] - 2026-11-16（第十二轮：把上一轮标为“授权外、待确认”的 torch 阻塞真正修上板——PEP 562 惰性导出落地）
+
+用户授权两项地基修复（上一轮 §19 里标为“属授权外，待确认”的那条），本轮把它们真上到板子
+工程树并实测。产出在 [BOARD_BRINGUP §19.4](../guides/BOARD_BRINGUP.md)。
+
+### Verified
+- **两个 `__init__.py` 改 PEP 562 惰性导出上板**（`app/model_layer/__init__.py` 与 `detectors/__init__.py`）：
+  板上 md5 `4874014d…`/`9488960b…` 与本机逐字节一致，各含 `__getattr__`。
+- **`import_probe.py` 全链 torch-free**：`app.model_layer` / `yolo_postprocess` / `yolo_detector` 三行由上轮 FAIL **转 OK**；
+  顶层依赖仅 `['__future__','numpy']`，板端致命依赖 `[]`。
+- **`gate_real_test.py` 真实工程树端到端 PASS**：打印 `常规 import 成功——__init__ 惰性导出已生效，无需桩`、
+  `plain_import_ok=True`；detect mean **106.64 ms** / median 108.96 ms（n=12），框中心越出画面帧数 = 0。
+- 开发机两侧护栏：`check_lazy_exports.py`（拦 torch，numpy-only 链路7 模块全过、`ModelRegistry` 取用时才炸）、
+  `check_lazy_with_torch.py`（装了 torch，8 个惰性符号照常取到）；本地回归 **42/42**。
+- 用户授权覆盖板上 `yolo_runtime.py`：板上 md5 已是 `cb5d5e83…`，与本机零 torch 修复版逐字节一致（幂等，无需再改）。
+
+### Corrected
+- **`normalized_input` 默认值对齐**：`yolo_detector.py` 类默认 `True` 与 `configs/default.yaml` 的 `false` 方向相反（第十轮 §60
+  标为“未改，挂 M-C”）。本轮改为默认 `False`：默认值只在绕过 config 的直接构造里生效，交付形态 RKNN 的归一化已烘进模型（喂 0-255）。
+  板上那份因 `YoloGateError` 归属不同只改这一行，md5 由 `79a6e030…` 变 `58bbfe04…`。
+- **部署脚本 heredoc 踩坑**：`apply_lazy_fix.sh` 里的 `python3 - <<'PY'` 定界符被跨平台换行截断，
+  python 代码被 bash 当命令执行（`line 18: import: command not found`）。改为独立 `.py` 落盘（`patch_detector_default.py`）
+  + 板上 `sed -i 's/\r$//'` 去 CR，重跑全绿。教训：**Windows→Linux 的 shell 脚本一律落盘后先去 CR 再执行，能不用 heredoc 就不用**。
+
+---
+
+## [Unreleased] - 2026-11-16（第十一轮：把修复推进板上工程树——真跑通了原图域，也自导自演了一次回归）
+
+用户授权覆盖 `/root/SFRNet/app/adaptation/runtime/yolo_runtime.py`（仅此一个文件，覆盖前备份）。
+产出在 [BOARD_BRINGUP §19](../guides/BOARD_BRINGUP.md)。**本轮最值钱的一条不是我验通了什么，而是我把自己写坏了一次——
+而只有真上工程树才能看见**。
+
+### Verified
+- **原图坐标域验收（补上第十轮只到 640 域的缺口）**：板上真实工程树 `YoloScreenGate.detect`（`normalized_input=False`）
+  vs Windows 同一个类（`backend="onnx"`, `normalized_input=True`），12 张原始分辨率 JPG：conf=0.05 下 board 4 / ref 4，
+  平均 IoU **0.9980**、worst **0.9949**、100% ≥ 0.95、conf 相对误差均值 1.201% / max 1.893%；板端原图框反算回 640 域
+  与已验收参照也对齐（尺寸不符 0）。`(cx-pad)/scale` 还原第一次参与验收。逐张：0.9995 / 0.9949 / 0.9983 / 0.9993，其余 8 张两边都无框。
+- **生产 gate 端到端 mean 102.55 ms / median 104.86 ms**（n=12，含 4K letterbox）；`YoloRuntime.load` 671.2 ms。已回填 SDD §3.3。
+- 修复版在板上工程树可直接 import（`CHANNELS=65`），且顶层 import 清单与覆盖前备份同为 `['__future__', 'numpy']`。
+- 回归 `tests/test_yolo_cascade.py` **42/42**（新增段 `[7]`：通道锚点对查 + `_to_nchw` 三方向 + `ast` 静态扫禁依赖）。
+
+### Found
+- **阻塞（不是本轮引入，但本轮才看见）：模型层包 `__init__` 硬加载 torch，板端产品路径根本 import 不进 Stage-1**。
+  `app/model_layer/__init__.py:17` → `contracts.py:16 import torch`；`app/model_layer/detectors/__init__.py:7` →
+  `sfrnet_detector.py:9 import torch`。板上无 torch（SDD §1.2/§2 明文），所以 `app.model_layer*` 全线
+  `ModuleNotFoundError`，级联开启时 `main.py:306` 必报错 → P3 降级。**即使布局 bug 已修，板上级联仍跑不起来**。
+  修法只能是把两个 `__init__.py` 改成 PEP 562 惰性导出，属授权外，待确认。
+- 板上工程树不是 git 工作树且与仓库 HEAD 双向漂移：板上 `engine.py`/`exceptions.py`/`yolo_detector.py`
+  已把 `YoloGateError` 下沉到 `logic_layer.exceptions`（为了绕开上面那条 torch 链），而**本机 HEAD 缺这套改动**。
+  `yolo_postprocess.py` 两份 md5 一致（`f504d315…`），`yolo_detector.py` 不一致（`79a6e030…` / `a7b2726e…`）。
+
+### Corrected
+- **我自己造成的一次回归（同一轮内发现并修好）**：第一版修复把
+  `from app.model_layer.detectors.yolo_postprocess import REG_MAX` 写在顶层，理由是不重复魔数——在板端错得彻彻底底，
+  这一行让 `YoloRuntime` 在板上从「能 import」变成「直接 `ModuleNotFoundError: torch`」，**比要修的 bug 还严重**。
+  已改为本模块自定 `REG_MAX/NC/CHANNELS` + 注释写明不能 import 的原因，并用 `ast` 静态护栏钉住。
+  教训：**上一轮的 prod_stage 副本把各级 `__init__.py` 建成空文件，正好掩掉了真实包结构的依赖面——自搭沙盒验证不能当交付证据**。
+- **`gate_real_test.py` 自检线写宽了一次**：拿“框尺寸不超过图幅”判坐标还原失败，误报一帧
+  （`IMG_20261113_170722` 预测高 3566 > 图高 3072）。YOLO 框本来就允许越出画面，改判框中心后 PASS。
+- 第十轮写的「`CHANNELS` 从 `yolo_postprocess` 取 `REG_MAX`，不重复魔数」已改写，否则下一轮人会把这句再坑一遍。
+
+---
+
+## [Unreleased] - 2026-11-16（第十轮：YOLO 裸主干上板实测——M-B 的 fp16 部分过了，顺手拆掉一条会把级联打碎的死代码）
+
+本轮按 SDD §8 M-B 跑 `yolo_screen_fp16.rknn` 上板验收，产出全部落在 [BOARD_BRINGUP §18](../guides/BOARD_BRINGUP.md)。最大的产出不是精度数字，而是发现**生产级联路径在板上从来没能跑通**——不跑一下 prod 分支就不会暴露。
+
+### Verified
+- **M-B 板端验收（fp16）全过**：`load_rknn`/`init_runtime` 均返 0；conf=0.25（n=1）IoU 0.9995 / conf 相对误差 0.174% / 召回下降 0；生产口径 conf=0.05（n=4）平均 IoU 0.998、worst 0.9949、100% ≥ 0.95；稠密层 conf=0.0（n=600）平均 0.9788、92.67% ≥ 0.95。判定代码与 x86 模拟器验收共用 `export_yolo._match_boxes`。
+- **单帧耗时拿到 `[实机]`**：NPU 前向 64.67 ms（n=30）/ `decode@0.05` 12.12 ms / Stage-1 合计 77.47 ms，已回填 SDD §3.3。原 `[推算]` 未被证伪，但**瓶颈归属错了**：NPU 占 83%，被当作隐患的 CPU 后处理只占 16%。
+- 后处理内部结构：`decode_boxes` 耗时与 conf 门限基本无关（12.12 vs 12.16 ms），因为开销在对全 8400 anchor 做 DFL 投影，截断发生在其后。
+- **验证图来自已泄漏的 val 集**，以上数字只证明转换链路正确，未写入任何模型精度表述。
+
+### Found
+- **缺陷：`yolo_runtime.py:79` 输出布局判断反向，生产级联每帧硬崩**。板端实测输出已经是 NCHW `[1,65,h,w]`，旧条件 `shape[-1] not in (65,)` 对 `80≠65` 判真→ 转成 `[1,80,65,80]` → `decode_boxes` 抛 `ValueError: cannot reshape array of size 83200 into shape (1,5200)`，**12/12 全中**。后果：按 P3 降级禁用级联，每张无屏帧多付 SFRNet 全图 ~96.6 s。与 §14.4 SFRNet 教训同源，重新踩了一遍。
+- **背景资料里的 `librknnrt 2.3.2` 不是生效版本**，实测 2.1.0（三重证据 + `get_sdk_version()` 复证）；2.3.2 是 `rknnlite/VERSION`（Python wrapper）。连带推论：预设的兜底「WSL 重转 toolkit 2.3.0」**无论如何做都消不掉 warning**，本轮未走该分支也未动系统库。
+- lite2 2.3.2 **不暴露任何输入/输出元信息 API**（无 `inputs_attr`/`outputs_attr`）——布局只能实测，不能查询。
+- 埋着的坑：`yolo_detector.py:30` 类默认 `normalized_input=True` 与 `config.py:71` 默认 `False` 方向相反（现网安全，绕过 config 直接构造则静默双重归一化）。未改，挂 M-C。
+
+### Corrected
+- **我自己把 30 次实测的 `decode_boxes` 计时打包错了**：初版把三次 `decode_boxes`（含 conf=0.0 让全 8400 候选进 NMS 的测量专用调用）归入同一次计时，报出 569.84 ms/帧合 637.53 ms。发现口径错后已**明确撤回**，改用 `board_timing.py` 拆分重测为 12.12 ms / 合计 77.47 ms。教训：**计时边界必须对齐生产调用序列，不能把诊断用分支混进预算数**。
+- **“板端没有 opencv”说错了**：判据用了 `pip3 list`，而 cv2 是 apt 装的。`board_timing.py` 实测 `cv2 available=True`，letterbox 确实走 `cv2.INTER_LINEAR`——又一次「搜索域选错就得出找不到的错结论」（同 §17.3 的 `which` 错）。
+- 修复后复核：真实 `app.*` 模块原样上板跑完整 `YoloRuntime` 生产链，与已验收口径**逐元素最大绝对差 = 0.000e+00**；`tests/test_yolo_cascade.py` 34/34，`build/check_docs.py` 全绿。
+
+---
+
 ## [Unreleased] - 2026-11-09（第九轮：OH 侧 bring-up 收口——查清每小时重启的真实机理，工程主线退回 Ubuntu）
 
 新板烧 KaihongOS 5.0.1 后一路做到 SSH 与 WiFi 可用，但本轮最重的产出是一条**否决性事实**：系统每约一小时被强制重启一次，且板端解除不了。据此定系统选型，详情全部落在 [BOARD_BRINGUP §17](../guides/BOARD_BRINGUP.md)。

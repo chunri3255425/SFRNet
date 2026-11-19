@@ -27,7 +27,7 @@ class YoloScreenGate:
 
     def __init__(self, runtime, screen_conf: float = 0.5,
                  gray_zone: float = 0.1, gray_policy: str = "prefer_screen",
-                 normalized_input: bool = True,
+                 normalized_input: bool = False,
                  dec_conf_thres: float = 0.05, dec_iou_thres: float = 0.5):
         """
         Args:
@@ -36,8 +36,14 @@ class YoloScreenGate:
             gray_zone: 灰区宽度 [screen_conf - gray_zone, screen_conf)
             gray_policy: prefer_screen=灰区视为有屏（宁报不漏，v2.4.1 决议）
                          fallback=灰区视为无屏（继续跑 SFRNet）
-            normalized_input: True=gate 内部把像素除 255（ONNX 开发机路径）；
-                              False=直接喂 0..255（RKNN：归一化已烘进模型，A1）
+            normalized_input: False（**默认**）=直接喂 0..255（RKNN：归一化已烘进
+                              .rknn，A1 口径）；True=gate 内部把像素除 255
+                              （ONNX 开发机路径，**需显式传**）。
+                              默认值取 False 的理由不是“哪边错得轻”——两边喂错都是全错，
+                              而是：默认值只在绕过 config 的构造里生效，而那种构造
+                              （工具脚本、测试、手工复现）几乎都是为了复刻板端行为；
+                              交付形态只有一个，默认值就该跟它一致。旧默认 True 与
+                              `config.py` 的 False 方向相反（2026-11-16 已对齐）。
             dec_conf_thres/dec_iou_thres: 后处理宽收参数（契约 D2/D3：判决权在门控）
         """
         if not 0.0 < screen_conf < 1.0:

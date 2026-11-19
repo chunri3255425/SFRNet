@@ -218,15 +218,23 @@ graph TD
 
 #### 各级职责与耗时预算
 
-| 级 | 模型 | 任务 | 输入 | 输出 | 耗时量级（推算，**均待实机标定**） |
+| 级 | 模型 | 任务 | 输入 | 输出 | 耗时量级 |
 |---|---|---|---|---|---|
-| Stage-1 | 轻量 YOLO（int8） | 画面中是否存在电子屏幕 | 整帧降采样至 640×640 | 框列表 [{x,y,w,h,conf}] | int8 NPU 单前向预计 **几十 ms** `[推算]`；含 NMS 后处理预计 < 200 ms `[推算]` |
+| Stage-1 | 轻量 YOLO（设计目标 int8；**本行实机数字来自 fp16 产物 `yolo_screen_fp16.rknn`，int8 尚未转换**） | 画面中是否存在电子屏幕 | 整帧降采样至 640×640 | 框列表 [{x,y,w,h,conf}] | NPU 单前向 **64.7 ms**（n=30，中位 65.2 / min 58.8 / max 77.2 / σ 3.2）`[实机]`；CPU 后处理 `decode_boxes(conf=0.05)` **12.1 ms** `[实机]`；**Stage-1 合计 77.5 ms** `[实机]`。模型外另需 letterbox 4096×3072→640 计 **13.0 ms** `[实机]`。**生产 `YoloScreenGate.detect()` 全流程（letterbox + 推理 + decode + 坐标还原）实测 mean 102.55 / median 104.86 ms（n=12）** `[实机]` |
 | Stage-2 | SFRNet（fp16，现产物） | 无屏帧的摩尔纹判定 | **全图**滑窗 512 块（v2.4.1 无 ROI 裁剪） | raw logits → coverage → has_moire / no_moire | 沿用实测 **3.0 s/块** `[实机]`，2275×1279 全图 32 块 ≈ 96.6 s `[实机]` |
 | 级联总开销 | — | 帧管理 | — | — | CPU 侧 < 100 ms `[推算]` |
 
+> **Stage-1 实机标定说明（2026-11-16，RK3576 Industio EVB7609V1）**：测试条件为 `librknnrt 2.1.0` / `RKNPU driver 0.9.8` / NPU `rknpu_ondemand` @ 950 MHz / 5 次 warmup 后计时 / 预热后连续 30 次。板端另一次独立 30 次实测单前向均值 59.7 ms，与 64.7 ms 存在约 8% 的运行间散布（ondemand 调频所致），两者均记为 `[实机]`。比对与验收细节见 `build/probes/yolo_board/`（框级/张量级：`compare_result.json`；分项耗时：`timing.json`；脚本：`prep_x86.py` / `board_run.py` / `board_timing.py` / `compare.py`）。
+>
+> 本次 `[推算]` 未被证伪：原估"NPU 单前向几十 ms"命中（实测 64.7 ms）；原估"含 NMS 后处理 < 200 ms"成立（实测 77.5 ms，后处理占 12.1 ms）。但**瓶颈归属与原设想不同**——NPU 前向占合计的 83%，CPU 后处理只占 16%；原表述把"NMS 后处理"当作需要担心的那一项，实测显示它不是。int8 转换后前向仍可能进一步下降，后处理耗时不变。
+>
+> 后处理内部结构实测：`decode_boxes` 在 conf=0.05 与 conf=0.25 下耗时基本不变（**12.12 vs 12.16 ms** `[实机]`），因为开销主要花在**对全 8400 个 anchor 做 DFL 投影**（阈值截断发生在其后），而非 NMS 候选框数量。含义：靠提高 conf 门限来降后处理耗时无效；真要降它需只对有正类激活的 anchor 做投影（`yolo_postprocess.py` 第 79–80 行无条件投影、第 103 行才截断，此处不属本次修改范围）。另 `to_nchw` 布局变换实测 0.68 ms，可忽略。letterbox 实测走 `cv2.INTER_LINEAR`（板端有 cv2，未回退 numpy 最近邻），与训练预处理一致。
+>
+> **原图坐标域也已验收（2026-11-16 补，见 BOARD_BRINGUP §19.3）**：上表的框级比对都在 640 letterbox 域做，不足以证明 `detect()` 末尾的 `(cx-pad)/scale` 还原正确。补测：板上真实工程树与 Windows onnxruntime 各跑**同一个** `YoloScreenGate.detect` 吃 12 张原始分辨率图，conf=0.05 下 board 4 / ref 4 全匹配，平均 IoU **0.9980**、worst **0.9949**、100% ≥ 0.95、conf 相对误差均值 1.201%（max 1.893%）；板端原图框反算回 640 域与已有参照也吻合（尺寸不符 0）。同时坐实：**输出坐标契约是原图域，不是 640 域**（§4.2）。
+
 > ⚠ **方向反转的代价如实记录**：v2.4 原设计里"屏幕框 → ROI 滑窗"能显著减少 SFRNet 块数（延迟收益最大的一条）；v2.4.1 反向后 SFRNet 恒跑全图，**该延迟优化不复存在**，§6 风险 #11（96.6 s/帧）成为无屏帧的真实成本。若后续延迟不可接受，可回到"ROI 裁剪"方案（挂 Q14），或在 SFRNet 侧做裁剪/降分辨率（§2 收敛方向）。
 
-> **关于耗时数字的坦诚声明**（沿用本仓库纪律）：Stage-1 所有性能数字在 YOLO 上板实测前一律标注 `[推算]`。本仓库已有三条"推算被实测证伪"的记录（延迟低估 238 倍、再差 15–25 倍、平台误判）。YOLO 的 RKNN 转换存在与 SFRNet 不同的坑：检测头输出含 decode/NMS 后处理，RKNN 转换通常需**去掉后处理只导出主干**（输出原始特征图），decode 放 CPU——见 §4.1 实现要点 A2。
+> **关于耗时数字的坦诚声明**（沿用本仓库纪律）：Stage-1 性能数字在 YOLO 上板实测前一律标注 `[推算]`；2026-11-16 上板实测完成后，Stage-1 各项已改为 `[实机]`（见上表与本节说明），仅"级联总开销"一行仍为 `[推算]`（级联接入未做，不在本次验证范围）。本仓库已有三条"推算被实测证伪"的记录（延迟低估 238 倍、再差 15–25 倍、平台误判）。YOLO 的 RKNN 转换存在与 SFRNet 不同的坑：检测头输出含 decode/NMS 后处理，RKNN 转换通常需**去掉后处理只导出主干**（输出原始特征图），decode 放 CPU——见 §4.1 实现要点 A2。
 
 
 ---
@@ -839,8 +847,9 @@ SFRNet/
 | 15 | **远景小屏幕召回（v2.4；v2.4.1 后果加重）** | YOLO 输入 640，4K 原图降采样后远处的手机屏可能只剩几十像素，漏检 → 该报 `screen_detected` 的帧落进 SFRNet 全图路径（多花 ~96.6 s 且结果语义错误） | 灰区策略默认 `prefer_screen`（§4.2）；`min_box_ratio` 挂 Q11；实测召回率后决定是否需要高分辨率二次确认（暂不做） |
 | 16 | **"屏幕"类目的边界（v2.4）** | 电子墨水屏、带屏音箱、广告机反光画面等是否算"电子屏幕"，标注口径不清会直接污染训练集 | 审核决议已定：**以"通电发光的显示面板"为准**，墨水屏/关机屏幕不入正类；规范写进 `datasets/README` |
 | 17 | **级联与判定恒真的相互作用（v2.4；v2.4.1 方向反转后性质改变）** | v2.4 时 `no_screen` 短路可能**掩盖** #12 恒真；v2.4.1 反向后 SFRNet **只看无屏帧**，而恒真问题恰在无内容图上最严重——按现配置每张无屏帧都会报 `has_moire`，#12 会以更高频率直接暴露在输出里 | 这既是风险也是观测机会：回归测试必须保留 `cascade.enabled=false` 的 v2.3 对照路径，`tests/test_real_weights.py` 增加级联开关双路对照用例；Q5/Q9 的阈值标定与权重定性因 #12 高频暴露而**更紧迫** |
-| 18 | **双模型常驻内存（v2.4）** | YOLO int8 约 3–7 MB + SFRNet fp16 50.9 MB + 双运行时上下文，4 GB 内存余量充足，但需确认 RKNNLite 双实例并存无冲突 | 首版两个独立 RKNNLite 实例（NPU_CORE_0_1_2 同配置）；上板后跑 1 h 常驻观察内存曲线，并入无人值守长期运行测试（风险 #8） |
+| 18 | **双模型常驻内存（v2.4）** | YOLO int8 约 3–7 MB + SFRNet fp16 50.9 MB + 双运行时上下文，4 GB 内存余量充足，但需确认 RKNNLite 双实例并存无冲突 | 首版两个独立 RKNNLite 实例；上板后跑 1 h 常驻观察内存曲线，并入无人值守长期运行测试（风险 #8）。**2026-11-16 实测修正原表述**："NPU_CORE_0_1_2 同配置" 在 RK3576 上不成立——`init_runtime(core_mask=NPU_CORE_0_1_2)` 返 0 但报 `W The RK3576 platform has only two NPU cores. "NPU_CORE_0_1_2" is not supported and will be automatically replaced with "NPU_CORE_0_1"`，即调用能成功但实际落到双核。功能不受影响，但任何按"三核均分"做的耗时推算无效；双实例并存的核分配需在 M-C 实机确认 |
 | 19 | **YOLO 校准集轻但同样不可省（v2.4）** | int8 无校准 → 激活分布统计失真 → conf 漂移 | 100–200 张实拍场景图即可（比 SFRNet 的屏摄标定集容易采集），随摄像头部署第一批采集 |
+| 20 | **模型层包 `__init__` 硬加载 torch，板端产品路径 import 不进 Stage-1（2026-11-16 实测）** | `app/model_layer/__init__.py:17` → `contracts.py:16 import torch`，`app/model_layer/detectors/__init__.py:7` → `sfrnet_detector.py:9 import torch`。而板上按 §1.2/§2 不装 PyTorch，于是 `app.model_layer*` 全线 `ModuleNotFoundError: torch`；级联开启时 `main.py:306` 必报错 → 按 P3 降级禁用级联。**即布局 bug（§18.3）修好后级联仍跑不起来**，且任何想复用 `yolo_postprocess` 常量的顶层 import 都会把调用方一并拖下坑（本轮已在这上面自导自演一次回归） | **已修（用户授权，2026-11-16 上板实测）**：那两个 `__init__.py` 已改 PEP 562 `__getattr__` 惰性导出（板上 md5 `4874014d…`/`9488960b…` 与本机一致），numpy-only 的 `yolo_postprocess`/`yolo_detector` 现可单独导入。板上 `import_probe.py` 三行由 FAIL 转 OK（顶层依赖仅 `['__future__','numpy']`），`gate_real_test.py` 打印 `plain_import_ok=True`、detect mean 106.64 ms、`RESULT=PASS`（[BOARD_BRINGUP §19.4](../guides/BOARD_BRINGUP.md)）。另把 `yolo_detector.py` 的 `normalized_input` 默认值 `True`→`False` 对齐 config（RKNN 归一化已烘进模型）。护栏：`tests/test_yolo_cascade.py` 段 `[7]` 用 `ast` 静态扫 `yolo_runtime.py` 顶层禁 `torch`/`app.model_layer` 导入，42/42 通过 |
 
 ---
 
@@ -870,7 +879,7 @@ SFRNet/
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
 | M-A 数据与训练 | 场景实拍 ≥ 300 张（含 ≥ 30% 负样本，数据来源含 WiFi 回传通道采集）→ 按 #16 口径标注 → ultralytics 微调 YOLOv8n | 开发机验证集 mAP@0.5 ≥ 0.9（单类任务，达不到先查标注口径 #16） |
-| M-B 转换上板 | 无后处理导出 → onnxslim → rknn int8 → 板端 RKNNLite 跑通 | 板端出框，与 ONNX 参照逐框 IoU ≥ 0.95；实测单帧耗时 `[实机]` 回填 §3.3 预算表 |
+| M-B 转换上板 | 无后处理导出 → onnxslim → rknn int8 → 板端 RKNNLite 跑通 | 板端出框，与 ONNX 参照逐框 IoU ≥ 0.95；实测单帧耗时 `[实机]` 回填 §3.3 预算表。**2026-11-16 部分达成**：fp16 链路已上板并通过——`load_rknn`/`init_runtime` 均返 0，conf=0.25（n=1）IoU 0.9995 / conf 相对误差 0.17% / 召回下降 0；生产口径 conf=0.05（n=4）平均 IoU 0.998、最差 0.9949、100% ≥ 0.95，conf 误差 1.20%，召回下降 0；稠密层 conf=0.0（n=600）平均 IoU 0.9788、最差 0.5601、92.67% ≥ 0.95（均 `[实机]`，明细 `build/probes/yolo_board/compare_result.json`）。**未完成项：int8**（校准集需 IMX415 实拍，挂 Q8/Q12）；因此本行验收只覆盖了 fp16，int8 的量化前后逐框比对仍需单独跑。**验证图来自已泄漏的 val 集，以上数字只证明转换链路正确，不得当作模型精度引用**。同日补验：**原图坐标域**（真实工程树 `YoloScreenGate.detect` vs onnxruntime 同类，conf=0.05 下 4/4 全匹配、平均 IoU 0.9980 / worst 0.9949）也已过，见 §3.3 与 BOARD_BRINGUP §19.3；但级联在板上的**启动**仍被风险 #20（模型层 `__init__` 硬 import torch）阻住，本行验收的是推理链而非服务链 |
 | M-C 级联接入 | engine 插入门控（有屏短路出 `screen_detected`，无屏进 SFRNet 全图）；三态 `DetectionResult`/`indicate` 改造；配置/错误恢复/回归用例落地 | `tests/smoke_board_pipeline.py` 全绿；级联开关双路对照（风险 #17）无行为分歧；`--detect a.jpg` 与 `--serve-net` 两形态均验证 |
 | M-D 联合标定 | 真实判定集上全链混淆矩阵（Q13/Q5） | 输出最终阈值组，替代 §4.2 的默认占位值；形成交付判据 |
 | M-E 文档收口 | v2.4 落地后同步更新 BOARD_BRINGUP（YOLO 实测节）与 CONTROL_LOGIC（级联判定规则 R-C1 无屏短路、R-C2 灰区 safe 策略） | `build/check_docs.py` 通过 |

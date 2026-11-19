@@ -814,4 +814,142 @@ dhd_conf_set_country : Country code: CN (CN/38)
 - 烧录前提未变：只能在 Windows 侧做（WSL 不透传 USB 烧录设备），且一旦中途失败，必须**拔 12V ≥ 10 s + 按住 Recovery 上电**才能复位僵死的 mini-loader。
 - 仍要保留的说法：OH 侧不是「失败」而是「已验证到接口级并定位到两个厂商缺陷」。未推送的验证产物（真权重上板、整帧跨后端对照、两个装配缺陷修复与 42/42 冒烟）不因换系统而作废，它们是回答「能不能上鸿蒙」的实测依据。
 
+## 18. YOLO 裸主干上板实测，与一条会把级联打碎的输出布局 bug（2026-11-16）
+
+SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/`（`prep_x86.py` 生参照与统一输入→ `board_run.py` 上板推理→ `compare.py` 判定），比对逻辑直接 import `build/export_yolo.py` 的 `_match_boxes`，与 x86 模拟器验收跑同一份判定代码。
+
+### 18.1 版本事实：2.3.2 是 wrapper 版本，生效的 runtime 是 2.1.0
+
+- **生效的 `librknnrt` 是 2.1.0，不是 2.3.2**。三重证据：全盘 `find` 只命中 `/usr/lib/librknnrt.so`（strings → 2.1.0）、`ldconfig -p` → `/lib/librknnrt.so`、python 进程 `/proc/self/maps` → 同一个；`get_sdk_version()` 独立复证 `API: 2.1.0 / DRV: 0.9.8`，运行日志也说 `librknnrt version: 2.1.0 (967d001cc8@2024-08-07T19:28:19)`。2.3.2 是 `rknnlite/VERSION`，即 **Python wrapper 版本**；wheel **不自带** `.so`，而是靠 dlopen 拿系统库。两个版本号分属不同层，不得互推。
+- **模型头 toolkit 2.5.0 vs runtime 2.1.0 仅打 warning，不阻断**：`RKNN Model version: 2.5.0 not match with rknn runtime version: 2.1.0` 之后 `load_rknn ret=0`、`init_runtime ret=0`，且数值链路逐框比对全过。因此**无需走「WSL 重转 2.3.0」分支**——重转也不能消除版本差，反而扰动已验收的导出链。仍按纪律**未动板端系统库**（会连累 SFRNet 已验证的 `.rknn`）。
+- 真实存在的 API 面限制：lite2 2.3.2 **完全不暴露输入/输出元信息**（`dir(RKNNLite)` 只有 `load_rknn / init_runtime / inference / release / get_sdk_version`，无 `inputs_attr`/`outputs_attr`）。布局不能靠查询，只能实测——见 18.3。
+
+一句话记住这两层：**`pip3 show rknn-toolkit-lite2` 答的是解释器包版本，`/proc/self/maps` 里那个 `librknnrt.so` 答的才是真正在算的版本**。背景资料里拿前者当后者用，导致预估了一个不存在的 2.3.2 runtime，并顺势把「WSL 重转 2.3.0」当成兜底方案——那个兜底在本板上无论如何做都消不掉 warning。
+
+### 18.2 验收数字（全部 `[实机]`，n=12 张 letterbox 后统一输入）
+
+| 项 | 值 |
+|---|---|
+| 逐框 conf=0.25 | ref 1 / board 1，IoU **0.9995**，conf 相对误差 **0.174%**，召回下降 0 |
+| 逐框 conf=0.05（生产口径） | ref 4 / board 4，平均 IoU **0.998**，worst 0.9949，100% ≥ 0.95，conf 误差 1.201% |
+| 逐框 conf=0.0（稠密凑样本） | 600/600 匹配，平均 0.9788，worst 0.5601，92.67% ≥ 0.95 |
+| 张量级正确喂法（NHWC 0–255） | pearson 0.999957–0.999993，worst max_abs/rms 0.1339 |
+| 张量级故意错喂 NCHW | worst max_abs/rms **11.91**，worst pearson **0.464** |
+| NPU 单前向 | **64.67 ms**（n=30，median 65.23 / min 58.82 / max 77.15 / σ 3.16）；另一次独立 30 次均值 59.65 ms，~8% 运行间散布归于 `rknpu_ondemand` |
+| `to_nchw` / `decode@0.05` / Stage-1 合计 | 0.68 / 12.12 / **77.47 ms** |
+| letterbox 4096×3072→640 | 12.95 ms（走 `cv2.INTER_LINEAR`，与训练一致） |
+
+样本量诚实说明：conf=0.25 下 12 张只有 1 框（11 张峰值 conf < 0.25），召回下降粒度为 100% 无区分度，所以另补 0.05 与稠密 0.0 两层。**验证图来自已泄漏的 val 集，上表全部只证明转换链路正确，不得当模型精度引用**。
+
+### 18.3 缺陷：`yolo_runtime.py` 输出布局判断写反，生产级联每帧硬崩
+
+- **症状**：板端实测 `lite.inference()` 返回的**已经是 NCHW `[1,65,80,80] / [1,65,40,40] / [1,65,20,20]`**，而旧代码第 79 行用 `o.shape[-1] not in (65,)` 判 NHWC：`80 ≠ 65` 判真 → 转成 `[1,80,65,80]` → `decode_boxes` 报 `ValueError: cannot reshape array of size 83200 into shape (1,5200)`。**12/12 张全部报错**，不是静默算错。
+- **后果**：`YoloRuntimeError` 被 gate 捕获后按 P3 降级禁用级联，每张无屏帧多付 SFRNet 全图 ~96.6 s。
+- **与 §14.4 同源**：SFRNet 侧 `rknn_runtime.py` 注释早已写下「实测输出已经是 NCHW，**不要**再反向 permute」，YOLO 侧重新踩了一遍。教训形式上很具体：**不能用「最后一维不是通道数」反推布局，必须用已知的通道数正推**。
+- **修复**：`YoloRuntime._to_nchw()` 改为按 65 通道轴定位——`shape[1]==65` 原样交回（幂等），`shape[3]==65` 才转置，两者都不中则抛 `YoloRuntimeError` 报清晰形状错误。优先判 `dim 1` 是故意的：若将来输入尺寸变化使某空间维也等于 65（如 520 输入→ s8 为 65），仍会正确归为 NCHW。通道锚点常量 `CHANNELS = 4 * REG_MAX + NC = 65` 在 `yolo_runtime.py` 里**自己写了一份**（`REG_MAX = 16` / `NC = 1`）——为什么不能从 `yolo_postprocess` import，见 §19.2，那正是修复过程中我自己踩出来的一次回归。
+- **修复后复核**：把真实的 `app/adaptation/runtime/yolo_runtime.py` + `yolo_postprocess.py` 原样上板（`build/probes/yolo_board/prod_stage/`），走 `YoloRuntime(backend="rknnlite").load/warmup/infer` 完整生产链跑 12 张 → `layout_fail=0`，输出形状全为 NCHW；与 18.2 已验收的 `board_run.py` 结果**逐元素最大绝对差 = 0.000e+00**，与 onnxruntime 参照仍为 @0.05 平均 IoU 0.9980 / worst 0.9949，@0.25 IoU 0.9995。回归：`tests/test_yolo_cascade.py` 34/34 通过。
+
+### 18.4 另一条实测推翻的既有表述：RK3576 只有两个 NPU 核
+
+`init_runtime(core_mask=RKNNLite.NPU_CORE_0_1_2)` **返 0**，但同时报 `W The RK3576 platform has only two NPU cores. "NPU_CORE_0_1_2" is not supported and will be automatically replaced with "NPU_CORE_0_1"`。即：调用“成功”但静默降级，SDD 风险 #18 原写的「NPU_CORE_0_1_2 同配置」不成立（已改）。任何按“三核均分”做的耗时推算无效；双 RKNNLite 实例并存的核分配需在 M-C 实机确认。
+
+### 18.5 一个当前不是 bug、但埋着的坑
+
+`yolo_detector.py:30` 的类默认值 `normalized_input=True` 与 `config.py:71` 的配置默认值 `False` **方向相反**。现网安全：`main.py:312` 总是从 config 透传，所以 RKNN 路径不会除 255。但任何绕过 config 直接 `YoloScreenGate(rknn_runtime)` 的写法（测试、工具脚本、后续重构）会**静默双重归一化**——与本节背景事实里特别强调的那条风险完全同形。未改（不在本次授权范围），建议在 M-C 前把类默认值调成 `False` 或改为必传参数。
+
+## 19. 覆盖到板上工程树真跑：布局通了，却撞出模型层的 torch 硬依赖（2026-11-16）
+
+§18 只验了自搭的 `prod_stage/` 副本。本轮把修好的 `yolo_runtime.py` 覆盖进真实工程树
+`/root/SFRNet/app/adaptation/runtime/`（用户授权，仅此一个文件；覆盖前备份为
+`yolo_runtime.py.bak-20261116-before-layout-fix`，md5 `7a6114c5…`），然后在**真实工程树**上重跑。
+结果两好一坏：数值链路在原图坐标域也过了，但暴露出一个比布局 bug 更靠地基的问题。
+
+### 19.1 先说我制造的一次回归
+
+第一版修复把 `from app.model_layer.detectors.yolo_postprocess import REG_MAX` 写在模块顶层，
+理由是“不重复魔数”。**这句话在板端是错的**：
+
+- `app/model_layer/__init__.py:17` → `contracts.py:16 import torch`
+- `app/model_layer/detectors/__init__.py:7` → `sfrnet_detector.py:9 import torch`
+
+于是 `import app.adaptation.runtime.yolo_runtime` 会先触发这两层包的 `__init__`，在板端直接
+`ModuleNotFoundError: No module named 'torch'`——**修之前那版能 import，修完反而连导入都失败**。
+板上 `librknnrt`、模型、NPU 都没问题，是 Python 侧依赖面被我扩大了一格。
+
+改法：`yolo_runtime.py` 顶层只留 `numpy`，`REG_MAX/NC/CHANNELS` 在本模块写一份并加注释说明为何不能 import；
+两份常量的对齐由 `tests/test_yolo_cascade.py` 新增段 `[7]` 守住（`CHANNELS == 4*REG_MAX+1 == 65`，
+外加用 `ast` 静态扫本模块顶层 import，出现 `torch*` 或 `app.model_layer*` 直接判失败）。
+回归从 34/34 涨到 **42/42 通过**。
+
+### 19.2 板端可导入性矩阵（`build/probes/yolo_board/import_probe.py` 实测）
+
+| 模块 | 修 `__init__` 前 | 惰性导出落地后（实测） |
+|---|---|---|
+| `app.adaptation.runtime.yolo_runtime` | **OK**（`CHANNELS=65`），可直接构造 `YoloRuntime("rknnlite")` | OK（不变） |
+| `app.logic_layer.engine` / `app.main` | OK（板端那份已把 `YoloGateError` 挪到 `logic_layer.exceptions`） | OK（不变） |
+| `app.model_layer` | **FAIL** `ModuleNotFoundError: No module named 'torch'` | **OK** |
+| `app.model_layer.detectors.yolo_postprocess` | **FAIL** 同上（模块本体是纯 numpy，被包 `__init__` 连坐） | **OK** |
+| `app.model_layer.detectors.yolo_detector` | **FAIL** 同上 | **OK** |
+
+顶层 import 清单取证：当前版与覆盖前备份**都是** `['__future__', 'numpy']`，
+即零 torch 依赖是这块的本分，我那版破了它，现已还原。
+
+**这条阻塞不是布局 bug 的延伸，而是更地基的问题**：级联开启时 `main.py:306` 会
+`from app.model_layer.detectors.yolo_detector import YoloScreenGate`，修 `__init__` 前在板端**必抛 torch 错**，
+只能按 P3 降级禁用级联。SDD §1.2/§2 写明板上不装 PyTorch，所以修法只能是让那两个
+`__init__.py` 不再急加载 torch（PEP 562 `__getattr__` 惰性导出）。**该修法已获用户授权并落地**（见 §19.4）。
+落地前取证时我用 `sys.modules` 塞两个空 `ModuleType` 占住包名、再按文件路径加载
+`yolo_postprocess.py` / `yolo_detector.py`，**等价于惰性化之后的效果**；惰性化真正上板后，
+这套桩已不再需要（`gate_real_test.py` 现打印 `plain_import_ok=True`）。
+
+### 19.3 原图坐标域验收（补上 §18.2 只到 640 域的缺口）
+
+`build/probes/yolo_board/gate_real_test.py`（板端，真实工程树的 `YoloScreenGate.detect`，
+`normalized_input=False`、`dec_conf_thres=0.05`）对 12 张**原始分辨率** JPG 出框，与 Windows 侧
+`ref_gate_test.py`（同一个类、`backend="onnx"`、`normalized_input=True`）逐框比：
+
+| 项 | 值 |
+|---|---|
+| 原图域 conf=0.05 | board 4 / ref 4，匹配 4，平均 IoU **0.9980**，worst **0.9949**，100% ≥ 0.95，conf 相对误差均值 1.201% / max 1.893% |
+| 板端原图框反算回 640 域 vs 已验收参照 | 平均 IoU 0.9980，worst 0.9949，conf 误差 max 1.893%，尺寸不符 0 |
+| 逐张 | 121303 IoU 0.9995；170659 0.9949；170719 0.9983；170722 0.9993（其余 8 张两边都无框，一致） |
+| 生产 gate 端到端（含 4K letterbox） | mean **102.55 ms** / median 104.86 ms（n=12）；`YoloRuntime.load` 671.2 ms |
+
+即 §18.2 的 77.47 ms 是 `infer + decode_boxes` 的口径，套上 `detect()` 全流程（letterbox +
+坐标还原）实测 102.55 ms，与 64.7 + 13.0 + 12.1 + 还原零头吻合。`(cx-pad)/scale` 这一步
+**第一次参与了验收**，且与参照在同一坐标域对上了。
+
+一个反直觉观察：`IMG_20261113_170722` 还原后框高 3566 px > 图高 3072 px，YOLO 框允许越出画面，
+**不是**坐标还原 bug（我最初拿“尺寸不超过图幅”当自检线，误报了一帧，已改成只判框中心）。
+
+文件对齐性：板上与本机 `yolo_postprocess.py` md5 同为 `f504d315…`、`yolo_runtime.py` 同为 `cb5d5e83…`；
+`yolo_detector.py` 两份不同（`79a6e030…` 板上 / `a7b2726e…` 本机），差在 `YoloGateError` 的归属位置，
+`detect()` 主体一致——上面的数字是各跑各的那份得到的，所以比的是行为不是字节。
+
+### 19.4 惰性导出落地：两个 `__init__.py` 上板 + `normalized_input` 默认值对齐（2026-11-16，用户授权）
+
+用户明确授权了两项地基修复，均已上板实测：
+
+1. **两个 `__init__.py` 改 PEP 562 惰性导出**（`app/model_layer/__init__.py` 与 `app/model_layer/detectors/__init__.py`）：
+   用模块级 `__getattr__` 把含 torch 的符号（`contracts` 的 7 个导出、`SFRNetDetector`）改成“用到才 import”，
+   包 `__init__` 本身不再急加载 torch。板上 md5 `4874014d…` / `9488960b…`，与本机逐字节一致。
+2. **`normalized_input` 默认值 `True` 对齐为 `False`**（`yolo_detector.py:27`）：默认值只在绕过 config 的直接构造里生效，
+   交付形态 RKNN 的归一化已烘进模型（喂 0-255），与 `configs/default.yaml` 的 `normalized_input: false` 对齐。
+   板上那份因 `YoloGateError` 归属方案不同，只改这一行，md5 由 `79a6e030…` 变 `58bbfe04…`。
+
+**开发机两侧护栏**（`check_lazy_exports.py` 拦截 torch / `check_lazy_with_torch.py` 装了 torch）：
+无 torch 时 numpy-only 链路 7 个模块全部可导入、`ModelRegistry` 要取用时才抛错；有 torch 时 8 个惰性符号照常取到。
+本地 `test_yolo_cascade.py` **42/42 通过**。
+
+**板上真实工程树实测**（`apply_lazy_fix.sh` → `import_probe.py` → `gate_real_test.py`）：
+
+| 项 | 结果 |
+|---|---|
+| `import_probe.py` 全链 torch-free | `app.model_layer` / `yolo_postprocess` / `yolo_detector` 三行由 **FAIL → OK**；顶层依赖仅 `['__future__','numpy']`，板端致命依赖 `[]` |
+| `gate_real_test.py` 常规 import | 打印 `常规 import 成功——__init__ 惰性导出已生效，无需桩`、`plain_import_ok=True` |
+| detect 端到端（12 张原图） | mean **106.64 ms** / median 108.96 ms；框中心越出画面帧数 = 0；`RESULT = PASS` |
+
+注：本轮 mean 106.64 ms 与 §19.3 的 102.55 ms 是两次独立实测（同一 gate、同一 12 图），差异在 NPU `ondemand` 档位抖动范围内，不作为“变慢”结论；二者都在 3.3.1 记录的板端延迟带内。
+
+
 
