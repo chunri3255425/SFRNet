@@ -30,8 +30,8 @@ clone 后目录是空的，需要时自行下载放回原文件名即可。
 ## 为什么没有安卓手册
 
 设计文档从头到尾假设 Linux：打包脚本落 `/opt/moireguard/` + systemd 单元，
-`app/adaptation/runtime/rknn_runtime.py` 依赖 Python 的 `rknn-toolkit-lite2`，取帧走 V4L2
-（`/dev/video*`），`device_io/` 只有 `linux_io.py`。换到安卓这三条都要重写成
+`app/adaptation/runtime/rknn.py` 依赖 Python 的 `rknn-toolkit-lite2`，取帧走 V4L2
+（`/dev/video*`），`device_io/` 只有 `linux.py`。换到安卓这三条都要重写成
 init 服务 + NDK `librknnrt.so` + Camera HAL，不是"暂不支持"而是整条依赖链不成立。
 详见 [CHANGELOG 的「文献归档与安卓路线处置」](../archive/CHANGELOG.md)。
 

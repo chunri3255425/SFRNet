@@ -72,9 +72,9 @@ def _show_frame(frame_rgb: np.ndarray, result) -> None:
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    from app.adaptation.camera.file_camera import FileCamera
-    from app.adaptation.device_io.linux_io import HostDeviceIO
-    from app.adaptation.relay.wifi_frame_relay import WifiFrameRelay
+    from app.adaptation.camera.file import FileCamera
+    from app.adaptation.device_io.linux import HostDeviceIO
+    from app.adaptation.relay.wifi import WifiFrameRelay
     from app.logic_layer.engine import DetectionEngine, DetectionRequest
 
     # ── 模型 ──
@@ -86,15 +86,15 @@ def main(argv=None) -> int:
         model_path = str(ROOT / "assets" / "weights" / "SFR_best.pth")
     if not Path(model_path).exists():
         print(f"[sim] 模型不存在: {model_path}")
-        print("      onnx 先跑: PYTHONPATH=. python build/export_model.py onnx "
+        print("      onnx 先跑: PYTHONPATH=. python build/export/model.py onnx "
               "--weights assets/weights/SFR_best.pth --out build/models/SFR_best.onnx")
         return 1
 
     if args.backend == "onnx":
-        from app.adaptation.runtime.onnx_runtime import OnnxRuntime
+        from app.adaptation.runtime.onnx import OnnxRuntime
         runtime = OnnxRuntime()
     else:
-        from app.adaptation.runtime.torch_runtime import TorchRuntime
+        from app.adaptation.runtime.torch import TorchRuntime
         runtime = TorchRuntime()
 
     # ── 装配（模拟器专用：FileCamera + HostDeviceIO，复用 engine/relay 不动一个字）──

@@ -16,8 +16,8 @@
 导入纪律（2026-11-16，BOARD_BRINGUP §19.2）：
   本包**不得在模块级 import torch**。板端按 SDD §1.2/§2 不装 PyTorch，而 Python
   导入任何子模块都要先执行各级包 __init__；一旦这里急加载 contracts/registry
-  （两者都 import torch），纯 numpy 的 `detectors.yolo_postprocess` 与
-  `detectors.yolo_detector` 在板端也会连 import 都失败，Stage-1 门控直接进不了进程。
+  （两者都 import torch），纯 numpy 的 `detectors.decode` 与
+  `detectors.yolo` 在板端也会连 import 都失败，Stage-1 门控直接进不了进程。
   所以下面用 PEP 562 `__getattr__` 惰性导出：用到谁才加载谁。
 """
 

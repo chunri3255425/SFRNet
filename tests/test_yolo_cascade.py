@@ -20,12 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.adaptation.camera.base import Frame, ICameraAdapter
 from app.adaptation.device_io.base import IDeviceIO, result_to_bool
-from app.adaptation.runtime.yolo_runtime import (
+from app.adaptation.runtime.yolo import (
     CHANNELS, YoloRuntime, YoloRuntimeError)
 from app.logic_layer.engine import DetectionEngine, DetectionRequest
-from app.model_layer.detectors.yolo_postprocess import (
+from app.model_layer.detectors.decode import (
     REG_MAX, decode_boxes, letterbox)
-from app.model_layer.detectors.yolo_detector import YoloGateError, YoloScreenGate
+from app.model_layer.detectors.yolo import YoloGateError, YoloScreenGate
 
 PASS = []
 
@@ -137,7 +137,7 @@ def make_engine(gate, sfr_value=2.0, size=(640, 480)):
 
 # ── 1. 后处理：decode + letterbox 坐标还原 ─────────
 def t_postprocess():
-    print("\n[1] yolo_postprocess decode / 坐标还原")
+    print("\n[1] decode 模块 · decode_boxes / 坐标还原")
     feats = FakeYoloRuntime({(8, 20, 20): 8.0}).infer(np.zeros((1, 3, 640, 640), np.float32))
     boxes = decode_boxes(feats, nc=1)
     check("强响应格点解出 1 框", len(boxes) == 1, f"n={len(boxes)}")
@@ -236,7 +236,7 @@ def t_v23_compat():
 # ── 7. YoloRuntime 布局归一 + 板端零 torch 依赖 ───────
 def t_runtime_layout():
     print("\n[7] YoloRuntime：通道锚点 / _to_nchw / 板端可导入性")
-    # 常量对查：yolo_runtime 自己复制了一份 REG_MAX（为了不去 import 含 torch 的
+    # 常量对查：runtime/yolo.py 自己复制了一份 REG_MAX（为了不去 import 含 torch 的
     # app.model_layer 包），两份值一旦分叉就会让 _to_nchw 静默失效。
     check("CHANNELS == 4*REG_MAX+NC == 65",
           CHANNELS == 4 * REG_MAX + 1 == 65, f"CHANNELS={CHANNELS}")
@@ -271,7 +271,7 @@ def t_runtime_layout():
     import ast
     repo = Path(__file__).resolve().parent.parent
     src = (repo / "app" / "adaptation" / "runtime" /
-           "yolo_runtime.py").read_text(encoding="utf-8")
+           "yolo.py").read_text(encoding="utf-8")
     top_imports = []
     for node in ast.parse(src).body:
         if isinstance(node, ast.Import):
@@ -280,7 +280,7 @@ def t_runtime_layout():
             top_imports.append(node.module)
     banned = [m for m in top_imports
               if m.split('.')[0] == "torch" or m.startswith("app.model_layer")]
-    check("yolo_runtime 顶层无 torch / app.model_layer 导入（板端可导入）",
+    check("runtime/yolo 顶层无 torch / app.model_layer 导入（板端可导入）",
           not banned, f"banned={banned} all={top_imports}")
 
 

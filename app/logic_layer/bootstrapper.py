@@ -9,8 +9,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, fields, is_dataclass
 
-import numpy as np
-
 from app.adaptation.camera.base import ICameraAdapter, frame_shape_error
 from app.adaptation.device_io.base import IDeviceIO
 from app.adaptation.runtime.base import IRuntimeAdapter

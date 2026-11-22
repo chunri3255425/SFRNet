@@ -21,7 +21,7 @@ import yaml
 class InferenceConfig:
     """推理配置"""
     tile_size: int = 512
-    stride: int = 256
+    stride: int = 256          # 仅老滑窗/像素融合路径；片网格路固定 tile//2（§20.11）
     threshold: float = 0.5
     coverage_threshold: float = 0.01
     device: str = "auto"  # "auto" | "cpu" | "cuda:0"
@@ -32,8 +32,8 @@ class InferenceConfig:
 
 @dataclass
 class CameraConfig:
-    """取帧配置（IMX415 @ MIPI CSI-2，4K@30fps）"""
-    device: str = "/dev/video0"
+    """取帧配置（IMX415 @ MIPI CSI-2，经 rkisp-vir0 mainpath 出 NV12）"""
+    device: str = "/dev/video33"
     width: int = 3840
     height: int = 2160
     fps: int = 30
@@ -44,6 +44,9 @@ class RuntimeConfig:
     """推理后端与模型文件（镜像内置为板端 RKNN；开发机走 runtime.host 覆盖层）"""
     backend: str = "rknn"
     model_path: str = "/usr/share/moireguard/models/model.rknn"
+    # 片级并行路数，只对 rule 后端生效：0=自动（`.rknn` 取 3，`.onnx` 恒 1）、
+    # 1=逐片串行（老行为）。板上实测 3 路 2.7×、4 路无增益（§20.12）。
+    tile_workers: int = 0
 
 
 @dataclass
@@ -80,7 +83,7 @@ class ModelConfig:
     active: str = "sfrnet_uhd"
     weights_path: str = "assets/weights/SFR_best.pth"
     tile_size: int = 512
-    stride: int = 256
+    stride: int = 256          # 同上：片网格路不读它
     device: str = "auto"
     precision: str = "fp32"
 

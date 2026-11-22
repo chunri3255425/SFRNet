@@ -22,13 +22,13 @@ import cv2
 import numpy as np
 
 from app.adaptation.base import DetectionResultDTO, IResultSink
-from app.adaptation.camera.base import Frame, ICameraAdapter, frame_shape_error
+from app.adaptation.camera.base import ICameraAdapter, frame_shape_error
 from app.adaptation.device_io.base import IDeviceIO
 from app.adaptation.relay.base import IFrameRelay
 from app.adaptation.runtime.base import IRuntimeAdapter
 from app.logic_layer.bootstrapper import Bootstrapper, DEFAULTS
 from app.logic_layer.decider import Decider
-from app.model_layer.detectors.yolo_detector import YoloGateError
+from app.model_layer.detectors.yolo import YoloGateError
 
 TILE = 512
 ALIGN = 32                      # 模型最深下采样 8 × 四象限 2×2 → 边长必须是 32 的倍数
@@ -100,6 +100,7 @@ class DetectionEngine:
         self._relay_started = False
         self._bad_frame_streak = 0
         self._last_valid: DetectionResult | None = None
+        self._last_domain = "pixel"      # 上一次 _infer_padded 交回的数组是什么域：pixel | tile
         self._frame_seq = 0
         self.report: "Bootstrapper.BootReport | None" = None
 
@@ -282,6 +283,12 @@ class DetectionEngine:
         # 3. 尺寸准入 C-01：对齐 32 倍数（策略 A：零信息损失填充）
         padded, (pad_h, pad_w) = self._align(frame.data)
 
+        # 3b. 后端声明只看亮度时，整图折灰一次（4K 实测 ~12 ms）。
+        #     旧写法是把三通道 float32 交给 runtime 逐片折：112 片 × 3 MB 的往返，
+        #     而结论本身一个通道都不要。量纲与翻转实测的依据见 runtime/rule 模块 docstring。
+        if getattr(self._runtime, "wants_gray", False):
+            padded = cv2.cvtColor(padded, cv2.COLOR_RGB2GRAY)
+
         # 4. 分块决策 C-02 + 逐块推理 + 融合（同上：前向异常归 C-11）
         try:
             logits = self._infer_padded(padded, req.tile_size)
@@ -291,7 +298,9 @@ class DetectionEngine:
             raise MoireEngineError("infer", repr(e)) from e
 
         # 5. 裁回原尺寸 + 判定（唯一一次 sigmoid 在 Decider）
-        if pad_h or pad_w:
+        #    像素域才裁。拿片网格去裁今天恰好是个空操作（rows、cols 总是 ≤ 边长），
+        #    但“恰好无害”不是契约：域记明在这里，比靠形状去猜便宜。
+        if (pad_h or pad_w) and self._last_domain == "pixel":
             logits = logits[: frame.data.shape[0], : frame.data.shape[1]]
         # 双门限按**本次请求**生效：早期实现只用构造期的 Decider()，
         # req.threshold / req.coverage_threshold 被静默忽略。
@@ -416,6 +425,8 @@ class DetectionEngine:
             max_prob=result.max_prob,
             mean_prob=result.mean_prob,
             elapsed_ms=result.elapsed_ms,
+            result=result.result,
+            stage1_conf=result.stage1_conf,
             warnings=tuple(result.warnings),
             ts=time.time(),
         )
@@ -445,22 +456,83 @@ class DetectionEngine:
 
     # ── 分块 + 前向 + 融合（logits 域，C-05 余弦窗）──
     def _infer_padded(self, img: np.ndarray, tile: int) -> np.ndarray:
+        """逐片前向，返回可直接交 Decider 的 logits。
+
+        后端声明 scalar_output 时走片网格（规则图：一片一个结论）：返回
+        [rows, cols]，融合退化成填一格，像素域的 float64 num/den 与整图 exp
+        全部不再发生。否则走逐像素融合（SFRNet：一片出一张图）。
+        两条路的出口都是 logits，sigmoid 仍然只在 Decider 做那一次（C-06）。
+        """
         h, w = img.shape[:2]
         rows = DetectionEngine._axis(h, tile, tile // 2)
         cols = DetectionEngine._axis(w, tile, tile // 2)
+        grid = getattr(self._runtime, "scalar_output", False)
+        gray_in = img.ndim == 2
+
+        if grid:
+            # 片网格：备料与推理分开，整批交后端。片与片之间没有任何依赖，后端
+            # 才能把片分给多路执行器（规则图板上实测 3 路 = 2.7×，§20.12）；
+            # 备料仍是视图，不复制像素。停机闸交给后端每片前调一次。
+            coords = [(i, j, y, x)
+                      for i, y in enumerate(rows) for j, x in enumerate(cols)]
+            feeds = []
+            for (_i, _j, y, x) in coords:
+                patch = img[y:y + tile, x:x + tile]
+                if patch.shape[0] < tile or patch.shape[1] < tile:
+                    patch, _ = DetectionEngine._align(patch)
+                if not gray_in:
+                    p = patch.astype(np.float32) / 255.0
+                    patch = np.ascontiguousarray(p.transpose(2, 0, 1))[None]
+                feeds.append(patch)
+            batch = getattr(self._runtime, "infer_tiles", None)
+            if batch is None:            # 只实现老契约的鸭子类型后端
+                outs = []
+                for p in feeds:
+                    self._raise_if_stopped()
+                    outs.append(self._runtime.infer(p))
+            else:
+                outs = batch(feeds, guard=self._raise_if_stopped)
+            probs = np.zeros((len(rows), len(cols)), dtype=np.float32)
+            for k, (i, j, _y, _x) in enumerate(coords):
+                out = outs[k]
+                if out.size != 1:
+                    # 声明与行为不一致：拿第一个值当整片结论会隐式改掉 coverage
+                    # 口径，停下来报错比猜便宜。
+                    raise MoireEngineError(
+                        "infer", f"{type(self._runtime).__name__} 声明 scalar_output"
+                                 f" 却交了 {out.shape}（{out.size} 个值）")
+                probs[i, j] = float(np.asarray(out).ravel()[0])
+            # 片网格：一片一格，无像素域累加。coverage 口径随之从"像素占比"变成
+            # "片计数占比"（四种口径的实测对比见 .scratch/coverage_metrics.py，
+            # 本机过程件；数字已写进 docs/design/CONTROL_LOGIC.md §5.1）。
+            self._last_domain = "tile"
+            self._last_tiles = probs.size
+            return probs
+
+        # 像素域融合的两块全尺寸累加器。片网格路不分配它们（4K 上各 64 MB）。
         num = np.zeros((h, w), dtype=np.float64)
         den = np.zeros((h, w), dtype=np.float64)
         window = DetectionEngine._hann2d(tile)
         tiles = 0
-        for y in rows:
-            for x in cols:
+        for i, y in enumerate(rows):
+            for j, x in enumerate(cols):
+                # 停机闸放在循环头：每片检一次。原先它在循环尾，
+                # 片网格路每片走 continue 会整段绕过，cancel 就只能在帧间生效了。
+                if self._stop_event.is_set():
+                    raise MoireEngineError("bad_frame", "cancelled")
                 patch = img[y:y + tile, x:x + tile]
                 if patch.shape[0] < tile or patch.shape[1] < tile:
                     patch, _ = DetectionEngine._align(patch)
-                patch = patch.astype(np.float32) / 255.0
-                tensor = np.ascontiguousarray(patch.transpose(2, 0, 1))[None]
-                out = self._runtime.infer(tensor)[0, 0]
+                if gray_in:
+                    # uint8 视图直接交：一次拷贝都不多（转 float32 是 runtime 的事，
+                    # 量纲 0-255 也是 runtime 的事）
+                    out = self._runtime.infer(patch)
+                else:
+                    p = patch.astype(np.float32) / 255.0
+                    tensor = np.ascontiguousarray(p.transpose(2, 0, 1))[None]
+                    out = self._runtime.infer(tensor)
                 ph, pw = patch.shape[:2]
+                out = out[0, 0]
                 if out.shape != (ph, pw):          # 后端输出与 patch 同尺寸；兜底裁剪
                     out = out[:ph, :pw]
                 # 权重窗口按实际 patch 尺寸取（单块小图路径 patch < tile）
@@ -471,10 +543,18 @@ class DetectionEngine:
                 num[y:y + ph, x:x + pw] += out * win
                 den[y:y + ph, x:x + pw] += win
                 tiles += 1
-                if self._stop_event.is_set():
-                    raise MoireEngineError("bad_frame", "cancelled")
+        self._last_domain = "pixel"
         self._last_tiles = tiles
         return (num / np.maximum(den, 1e-8))[:h, :w]
+
+    def _raise_if_stopped(self) -> None:
+        """片级停机闸：交给后端每片前调一次。
+
+        并行后仍是每片一检（不是每帧一检），所以取消延迟仍是一个片的量级，
+        不会因为一整帧一次性交出去就等到帧尾才能停。
+        """
+        if self._stop_event.is_set():
+            raise MoireEngineError("bad_frame", "cancelled")
 
     @staticmethod
     def _axis(full: int, tile: int, stride: int) -> list[int]:
@@ -491,6 +571,17 @@ class DetectionEngine:
 
     @staticmethod
     def _hann2d(size: int) -> np.ndarray:
-        w1 = np.hanning(size + 2)[1:-1]
-        w2 = np.outer(w1, w1)
-        return np.maximum(w2, 1e-6)
+        """可分离余弦窗，按尺寸缓存。
+
+        小片路径（单块图不足 tile）原先每片重一次外积；窗只随尺寸变，所以
+        缓存就能归零。交回只读数组：调用方就地改写会留下跨帧脏窗。
+        """
+        cached = DetectionEngine._HANN.get(size)
+        if cached is None:
+            w1 = np.hanning(size + 2)[1:-1]
+            cached = np.maximum(np.outer(w1, w1), 1e-6)
+            cached.flags.writeable = False
+            DetectionEngine._HANN[size] = cached
+        return cached
+
+    _HANN: dict[int, np.ndarray] = {}

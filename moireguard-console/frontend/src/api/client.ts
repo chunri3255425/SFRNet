@@ -61,6 +61,13 @@ export interface EventStreamHandle {
   close: () => void;
 }
 
+/** 把事件时间统一成毫秒 epoch；无效值退回本地当前时间。 */
+export function normalizeTs(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+  return n < 1e11 ? n * 1000 : n;
+}
+
 /**
  * 订阅全局 SSE 事件流 /api/events。
  * EventSource 自带断线重连；onError 只上报（连接断开时标记离线），
@@ -91,7 +98,12 @@ export function openEventStream(
         coverage: Number(data.coverage) || 0,
         elapsed_ms: Number(data.elapsed_ms) || 0,
         frame_id: Number(data.frame_id) || 0,
-        ts: Number(data.ts) || Date.now(),
+        // ts 单位归一：板端 DTO 的 ts 是 epoch 秒（base.py 字段说明 +
+        // engine.py 用 time.time()），而 EventList / csv / AlertBanner 全都按
+        // new Date(ts) 当毫秒用。不换算的话相邻两帧差 19 秒会被读成 19 毫秒，
+        // 整屏事件挤进同一秒显示。阈值 1e11 区分秒/毫秒（毫秒级 epoch 到
+        // 公元 5138 年才越过它，秒级则早已越过）。
+        ts: normalizeTs(data.ts),
       });
     } catch {
       // 解析失败：忽略该帧，UI 不崩溃

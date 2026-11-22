@@ -2,7 +2,7 @@
 
 用法：
   python -m app.main                             # 板端常驻检测循环（默认）
-  python -m app.main --backend torch             # 开发机用 PyTorch 后端
+  python -m app.main --backend torch             # 开发机用 PyTorch 后端（板端禁用）
   python -m app.main --frames 5                  # 只跑 5 帧自检
   python -m app.main --detect a.jpg              # 单张图判定后退出（巡检/调试）
   python -m app.main --serve-net                 # 起 HTTP 出口并常驻（读 network 节）
@@ -88,7 +88,7 @@ class ServiceFacade:
 
     # ---- 内部
     def _run(self, image: Any, name: str) -> DetectionResultDTO:
-        from app.logic_layer.inference_service import InferenceRequest
+        from app.logic_layer.inference import InferenceRequest
 
         self._state = "BUSY"
         t0 = time.perf_counter()
@@ -111,6 +111,10 @@ class ServiceFacade:
             max_prob=float(prob.max()) if prob.size else 0.0,
             mean_prob=float(prob.mean()) if prob.size else 0.0,
             elapsed_ms=elapsed_ms,
+            # 这条是 /detect 的单图路径，只跑 Stage-2，不经级联门控：
+            # 三态由 has_moire 直接派生，stage1_conf 置 None（未跑）。
+            result="has_moire" if result.has_moire else "no_moire",
+            stage1_conf=None,
             mask_png=_to_png(mask),
             prob_png=_to_png(prob),
             warnings=tuple(result.warnings),
@@ -136,8 +140,15 @@ def _to_png(arr: Any) -> Optional[bytes]:
 # =============================================================================
 
 
-def build_config(io: IDeviceIO, args: argparse.Namespace) -> ConfigManager:
-    """四段合并，返回唯一的配置对象。"""
+def build_config(io: IDeviceIO, args: argparse.Namespace,
+                 platform: Optional[str] = None) -> ConfigManager:
+    """四段合并，返回唯一的配置对象。
+
+    Args:
+        platform: 已知平台时直接传入（避开重复探测）；None 则自己探。
+                  只有 rule 后端用它 —— 规则图的产物与 SFRNet 不是同一个文件，
+                  开发机是 build/models/rule_v5.onnx，板端是模型目录里的 .rknn。
+    """
     cm = ConfigManager()          # 已含 dataclass 默认 + configs/default.yaml
     cm.merge(io.read_config() or {})   # 板端 /etc + /var/lib 覆盖；开发机同文件
     cli: dict[str, Any] = {}
@@ -146,6 +157,11 @@ def build_config(io: IDeviceIO, args: argparse.Namespace) -> ConfigManager:
         runtime["model_path"] = args.model
     if args.backend != "auto":
         runtime["backend"] = args.backend
+    if runtime.get("backend") == "rule" and "model_path" not in runtime:
+        # 不接这一句，--backend rule 会去加载配置里给 SFRNet 写的 model.rknn，
+        # 报“加载 .rknn 失败”，从错因看不出是路径串了而不是文件坏了。
+        from app.adaptation.runtime.rule import default_model_path
+        runtime["model_path"] = default_model_path(platform or ada.detect_platform())
     if runtime:
         cli["runtime"] = runtime
     inference: dict[str, Any] = {}
@@ -161,6 +177,22 @@ def build_config(io: IDeviceIO, args: argparse.Namespace) -> ConfigManager:
         cli["model"] = {"weights_path": args.model}   # 单次图像路径读 model.weights_path
     if args.relay:
         cli["relay"] = {"enabled": True, "host": args.relay_host, "port": args.relay_port}
+        ri = getattr(args, "relay_interval", None)
+        if ri is not None:
+            cli["relay"]["interval_frames"] = ri
+    # 采集分辨率：不接这三个字段的话 CameraConfig.width/height/fps 是空设，
+    # 适配器只会用自己的默认（4K），而 4K 单帧推理要 263s —— relay 是在检测
+    # 循环里推的（engine.py:272），于是画面会变成每几分钟一帧。
+    # 用 getattr 而非直接取属性：测试与外部调用方手搓的 Namespace 可能没这些字段。
+    camera: dict[str, Any] = {}
+    for attr, key in (("camera_width", "width"),
+                      ("camera_height", "height"),
+                      ("camera_fps", "fps")):
+        val = getattr(args, attr, None)
+        if val is not None:
+            camera[key] = val
+    if camera:
+        cli["camera"] = camera
     cm.merge(cli)
     return cm
 
@@ -177,10 +209,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     g.add_argument("--serve-net", action="store_true", help="启动网络出口并常驻")
     g.add_argument("--selftest", action="store_true", help="不加载权重，仅验网络装配")
 
-    p.add_argument("--backend", default="auto", choices=["auto", "rknn", "onnx", "torch"],
-                   help="推理后端（auto：板端 rknn / 开发机 torch，选定不回退）")
+    p.add_argument("--backend", default="auto",
+                   choices=["auto", "rknn", "onnx", "torch", "rule"],
+                   help="推理后端（auto：板端 rknn / 开发机 torch，选定不回退；"
+                        "rule：编译进 NPU 的判别规则图。板端只允许 NPU，"
+                        "torch/onnx 在板端平台直接拒装）")
     p.add_argument("--model", default=None, help="模型文件路径（覆盖配置，首次加载前生效）")
-    p.add_argument("--camera", default=None, help="取帧源：/dev/video0 或 图片/视频路径")
+    p.add_argument("--camera", default=None, help="取帧源：/dev/video* 或 图片/视频路径")
     p.add_argument("--frames", type=int, default=0, help="只检测 N 帧（0=常驻循环）")
     p.add_argument("--loop", action="store_true",
                    help="与 --serve-net 同用：常驻检测循环 + 网络出口共跑，"
@@ -193,6 +228,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--relay", action="store_true", help="启用 WiFi 画面回传")
     p.add_argument("--relay-host", default="192.168.1.100")
     p.add_argument("--relay-port", type=int, default=9000)
+    p.add_argument("--relay-interval", dest="relay_interval", type=int, default=None,
+                   help="每 N 个检测循环推一帧回传（覆盖 relay.interval_frames）")
+    p.add_argument("--camera-width", dest="camera_width", type=int, default=None,
+                   help="采集宽（覆盖 camera.width）；4K 采集会让单帧推理 ≈263s")
+    p.add_argument("--camera-height", dest="camera_height", type=int, default=None,
+                   help="采集高（覆盖 camera.height）")
+    p.add_argument("--camera-fps", dest="camera_fps", type=int, default=None,
+                   help="采集帧率（覆盖 camera.fps）")
     p.add_argument("--host", default=None, help="覆盖 network.host")
     p.add_argument("--port", type=int, default=None, help="覆盖 network.port")
     p.add_argument("--token", default=None, help="覆盖 network.token")
@@ -219,7 +262,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     platform = ada.detect_platform()
     io = ada.make_device_io(platform)
-    cm = build_config(io, args)
+    cm = build_config(io, args, platform)
 
     if args.loop and not args.serve_net:
         print("E-ARG: --loop 需与 --serve-net 同用；不加 --serve-net 时默认形态本就是常驻循环",
@@ -254,6 +297,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.detect or args.serve_net:
         from app.model_layer.registry import ModelRegistry
 
+        if args.backend != "auto" or args.model:
+            # 这两条只写进 config.runtime，而下面的主机侧服务栈按 config.model.active
+            # 从 ModelRegistry 取权重 —— 不吭一声，`--backend rule --detect x.jpg`
+            # 会安静地跑 SFRNet（实测：开发机上直接炸在 torch 前向，报错里一个
+            # rule 都看不出）。要么改走循环路，要么就承认现在是两套装配。
+            io.log("WARN", "--backend/--model 对 --detect/--serve-net 无效：单图与 HTTP "
+                           "走 InferenceService（模型注册表）；要跑规则后端用 "
+                           "--camera <图> --frames 1")
         try:
             service = _build_host_service(cm)
         except Exception as e:
@@ -291,10 +342,23 @@ def _run_loop(platform: str, io: IDeviceIO, cm: ConfigManager,
         source = cm.config.camera.device
     else:
         source = None
-    camera = ada.make_camera(platform=platform, device=source)
-    runtime = ada.make_runtime(cm.config.runtime.backend)
-    relay = ada.make_relay(enabled=cm.config.relay.enabled,
-                           host=cm.config.relay.host, port=cm.config.relay.port) \
+    camera = ada.make_camera(
+        platform=platform, device=source,
+        # 尺寸只适用于真设备：FileCamera 只接 (source, fps)、FakeCamera 不接 fps，
+        # 无条件传 width/height/fps 会让图片源与假源直接 TypeError。
+        **({"width": cm.config.camera.width,
+            "height": cm.config.camera.height,
+            "fps": cm.config.camera.fps}
+           if source and source.startswith("/dev/") else {}))
+    # tile_workers 只对规则后端有意义（一轮多路 RKNNLite 并行，§20.12）；
+    # 别的后端不认这个参数，所以只对 rule 透传。
+    rt_kw = ({"tile_workers": cm.config.runtime.tile_workers}
+             if cm.config.runtime.backend == "rule" else {})
+    runtime = ada.make_runtime(cm.config.runtime.backend, platform=platform, **rt_kw)
+    # 只传 enabled：host/port/interval_frames 等由 engine.start() 从 config.relay
+    # 读后经 relay.start(...) 注入（engine.py:120-127）。WifiFrameRelay 的构造器
+    # 不收 host —— 传了会 TypeError。
+    relay = ada.make_relay(enabled=cm.config.relay.enabled) \
         if cm.config.relay.enabled else None
     # [v2.4.1] Stage-1 级联门控装配：模型缺失/加载失败 = 非致命（P3），
     # 记 WARN 后以 None 接入引擎，行为自动退化为 v2.3 全图路径。
@@ -302,8 +366,8 @@ def _run_loop(platform: str, io: IDeviceIO, cm: ConfigManager,
     ccfg = cm.config.cascade
     if ccfg.enabled:
         try:
-            from app.adaptation.runtime.yolo_runtime import YoloRuntime
-            from app.model_layer.detectors.yolo_detector import YoloScreenGate
+            from app.adaptation.runtime.yolo import YoloRuntime
+            from app.model_layer.detectors.yolo import YoloScreenGate
             yrt = YoloRuntime(backend=ccfg.backend)
             yrt.load(ccfg.model_path)
             yrt.warmup()
@@ -361,7 +425,7 @@ def _run_loop(platform: str, io: IDeviceIO, cm: ConfigManager,
 
 def _build_host_service(cm: ConfigManager):
     """主机侧单次图像服务（权重缺失/结构不匹配按 v2.2 §2 属致命）。"""
-    from app.logic_layer.inference_service import InferenceService
+    from app.logic_layer.inference import InferenceService
     from app.model_layer.registry import ModelRegistry
 
     return InferenceService(ModelRegistry(), cm)
@@ -374,7 +438,7 @@ def _start_server(image_service: Any, io: IDeviceIO, cfg: NetworkConfig,
     engine_obj 显式传入时（常驻循环形态）用真实引擎报状态；否则退回用
     image_service 自身（主机侧服务栈把 engine_state() 实现在 facade 上）。
     """
-    from app.adaptation.network.http_server import HttpNetServer
+    from app.adaptation.network.http import HttpNetServer
 
     server = HttpNetServer(
         NetServerOptions(image_service=image_service,

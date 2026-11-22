@@ -38,10 +38,21 @@ class DetectionResultDTO:
     Attributes:
         source_id: 输入标识（文件名/帧号/上传原名）
         has_moire: 布尔判定（coverage > coverage_threshold）
-        coverage: 摩尔纹面积占比 [0, 1]
-        max_prob: 全图最大概率值 [0, 1]
-        mean_prob: 全图均值概率
+        coverage: 摩尔纹规模占比 [0, 1]。**口径随后端变**，两者都是占比但分母不同：
+            逐像素后端（SFRNet）数的是像素占比；规则后端每片只出一个结论，
+            数的是过门片占比（粒度 = 1/片数，4K@512/256 为 112 片 → 0.9%）。
+            两种后端之间比小数点后两位没有意义；它们在 494 张上的精度差（92.51%
+            vs 91.70%，C=0.01）见 .scratch/coverage_metrics.py（本机过程件，不入库）。
+        max_prob: 全图最大概率值 [0, 1]（规则后端：片网格上的最大值，所以它是
+            "概率最高的那一片"的概率，不再受像素窗平滑影响）
+        mean_prob: 均值概率（规则后端同样在片网格上取，不再是像素均值）
         elapsed_ms: 本帧推理耗时（毫秒）
+        result: 三态结论 screen_detected / has_moire / no_moire。早期版本没带这个
+            字段，导致 HTTP/SSE 面上 screen_detected 与 no_moire 逐字段不可区分
+            （has_moire 对两者都是 False）；控制台前端按 result 分色，缺它会被当作
+            脏数据整条丢弃。
+        stage1_conf: Stage-1 屏检最高置信度，仅级联开启时有意义（诊断用）；
+            None = 本轮未跑 Stage-1。
         mask_png: 二值掩膜编码为 PNG 的字节；None 表示不携带
         prob_png: 概率图编码为 PNG 的字节；None 表示不携带
         warnings: 非致命提示（降级沿用旧值、边角伪影等）
@@ -53,6 +64,8 @@ class DetectionResultDTO:
     max_prob: float
     mean_prob: float
     elapsed_ms: float
+    result: Optional[str] = None
+    stage1_conf: Optional[float] = None
     mask_png: Optional[bytes] = None
     prob_png: Optional[bytes] = None
     warnings: tuple[str, ...] = ()
@@ -67,6 +80,10 @@ class DetectionResultDTO:
             "max_prob": round(self.max_prob, 6),
             "mean_prob": round(self.mean_prob, 6),
             "elapsed_ms": round(self.elapsed_ms, 1),
+            # 三态与 Stage-1 置信度必须出得去：消费侧（控制台前端）拿 result 分色，
+            # 只靠 has_moire 无法区分 screen_detected 和 no_moire。
+            "result": self.result,
+            "stage1_conf": self.stage1_conf,
             "warnings": list(self.warnings),
             "ts": self.ts,
         }

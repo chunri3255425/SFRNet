@@ -1,6 +1,6 @@
 """上位机画面查看器 — 接收板端 WiFi 回传的 JPEG 帧并显示。
 
-与 app/adaptation/relay/wifi_frame_relay.py 对应：
+与 app/adaptation/relay/wifi.py 对应：
   TCP listen :9000 → 每帧 = 4 字节小端长度前缀 + JPEG blob
 
 用法：

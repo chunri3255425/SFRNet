@@ -160,16 +160,16 @@ frame = camera.grab(timeout_ms=3000)
 
 **根因**：`upstream/sfr/FRM.py:109-128` 把特征图按 `H//2`、`W//2` 切成四个象限，再在 `FRM.py:135-138` 拼回去。当 `H` 为奇数时 `H//2 + (H - H//2) ≠ H` 的对称性被打破，拼接出错位 1px 的尺寸不匹配。而 `32` 是模型最深下采样倍率 `H/8` 的 4 倍（四象限再各下采样 8 倍），边长必须是 32 的倍数才能让四个象限在每一层都整除。
 
-> **对现有实现的直接影响**：`SlidingWindowEngine.__call__` 在 `sliding_window.py:215-218` 只对 `H<512` 做反射填充，**不检查填充后是否满足 32 的倍数**，也不检查 `H>512` 时的整除性。当前 `plan()` 只在 `tile=512` 下工作，512 本身满足 32 倍数，所以滑窗主路径是安全的；但**小图分支**（`H` 或 `W` < 512）填充到 512 后虽然安全，**非滑窗直通路径**（即直接调 `core.forward`）会崩。必须在 `InferenceService.run` 第 3 步之后插入本闸门。
+> **对现有实现的直接影响**：`SlidingWindowEngine.__call__` 在 `window.py:215-218` 只对 `H<512` 做反射填充，**不检查填充后是否满足 32 的倍数**，也不检查 `H>512` 时的整除性。当前 `plan()` 只在 `tile=512` 下工作，512 本身满足 32 倍数，所以滑窗主路径是安全的；但**小图分支**（`H` 或 `W` < 512）填充到 512 后虽然安全，**非滑窗直通路径**（即直接调 `core.forward`）会崩。必须在 `InferenceService.run` 第 3 步之后插入本闸门。
 
 ### 3.3 通道与位深准入
 
 | 输入模式 | 处理 | 依据 |
 |---|---|---|
-| `L`（灰度） | `convert("RGB")` 复制三通道 | `builtin_adapter.py:104-106` |
-| `RGBA` | 丢弃 alpha → `RGB` | `builtin_adapter.py:101-103` |
-| `CMYK` | 转 `RGB` | `builtin_adapter.py:107-109` |
-| `P`（调色板）| 走 `else` 分支 `convert("RGB")` | `builtin_adapter.py:110-111` |
+| `L`（灰度） | `convert("RGB")` 复制三通道 | `builtin.py:104-106` |
+| `RGBA` | 丢弃 alpha → `RGB` | `builtin.py:101-103` |
+| `CMYK` | 转 `RGB` | `builtin.py:107-109` |
+| `P`（调色板）| 走 `else` 分支 `convert("RGB")` | `builtin.py:110-111` |
 | 16bit | `_detect_bit_depth` 识别，但**当前实现仍按 `/255.0` 归一化** | ⚠ 见 §7.2 缺陷 D-05 |
 
 **准入门槛**：转换后张量必须通过 `assert_input_contract`（`contracts.py:204-225`）——4 维、batch=1、通道=3、float32、值域 [0,1]、无 NaN/Inf。任一不通过 → `E-CONTRACT-*` → 该帧作废，进 §5.3。
@@ -211,7 +211,7 @@ ELSE:   # 一维 <= tile 且另一维 > tile —— ★ 当前实现会崩溃
 
 > ### ⚠ 分支 C 的现有实现缺陷（高危，实测复现）
 >
-> `plan()` 在 `sliding_window.py:106-124` 对每一维独立地跑 `while y + tile <= h` 循环。当**短维 < tile 且长维 > tile** 时，短维的循环体一次都不执行，`rows` 保持空列表，随后 `rows[-1]` 立即抛 `IndexError`。
+> `plan()` 在 `window.py:106-124` 对每一维独立地跑 `while y + tile <= h` 循环。当**短维 < tile 且长维 > tile** 时，短维的循环体一次都不执行，`rows` 保持空列表，随后 `rows[-1]` 立即抛 `IndexError`。
 >
 > `[实测]` 崩溃矩阵：
 >
@@ -318,8 +318,8 @@ out = numerator / clamp(denominator, min=1e-8)
 
 **三条硬约束**：
 
-1. **在 logits 域累加**，绝不先 sigmoid。因 `σ(E[ℓ]) ≠ E[σ(ℓ)]`（`[代码] sliding_window.py:9-10` 已声明）。
-2. **分母 clamp 下限 1e-8**（`[代码] sliding_window.py:183`）。`[实测]` 余弦窗四角权重 = 1.00e-06，768² 图像左上角分母 = 1.000e-06，远大于 1e-8，故**当前不会触发 clamp**，融合结果数值正确（`[实测]` 用常数 logits=2.0 做端到端，输出恒为 2.0000，误差 0.0000）。
+1. **在 logits 域累加**，绝不先 sigmoid。因 `σ(E[ℓ]) ≠ E[σ(ℓ)]`（`[代码] window.py:9-10` 已声明）。
+2. **分母 clamp 下限 1e-8**（`[代码] window.py:183`）。`[实测]` 余弦窗四角权重 = 1.00e-06，768² 图像左上角分母 = 1.000e-06，远大于 1e-8，故**当前不会触发 clamp**，融合结果数值正确（`[实测]` 用常数 logits=2.0 做端到端，输出恒为 2.0000，误差 0.0000）。
 3. **边角不可靠但当前无处理**。`[实测]` 当只让 2 个 tile 输出高置信时，图像角落 (0,0) 与 (0,511) 融合后概率 = 0.9997，而中心 = 0.9816——角部反而更"确定"，因为该处仅由单 tile 决定、没有其他 tile 拉低。**这是余弦窗的固有副作用**：图像四角仅有 1 个 tile 的角部覆盖，该 tile 在角部的感受野不完整（零填充边界效应）。
 
 **建议实现（补丁级）**：融合后在 `denominator < 0.02` 的区域标注 `low_confidence` 掩膜，判定时对这些区域**不计入 coverage 分子也不计入分母**，或对 `has_moire` 结论附加 `warnings.append("border_low_conf_ratio=X%")`。判定阈值不应受边角伪影影响。
@@ -345,6 +345,8 @@ out = numerator / clamp(denominator, min=1e-8)
 | `coverage_threshold` | **面积级** | 0.01 | `coverage == 0.01` 时判为无摩尔纹 | `postprocess.py:125` |
 
 `[实测]`：全零 logits → coverage = 0.000000 → `has_moire = False`；全正大 logits → coverage = 1.0000 → `True`。当 `coverage_threshold = 0.01` 时，含义是"超过 1% 的像素被判为摩尔纹"才报警。
+
+**分母随 Stage-2 后端变（2026-11-22 起要记住的一条）**：规则后端（`RuleRuntime`）每片只出一个标量，交给 Decider 的是**片网格** `[rows, cols]`，所以上式第③步的 `mask.numel()` 是片数而不是像素数——coverage 读作"过门片占比"，粒度 = 1/片数（4K@512/256 为 112 片 → 0.9%，`C=0.01` 等于"至少 2 片过门"）。SFRNet 逐像素后端仍是像素占比，两者不可混读。四种候选口径在同一批 494 张 / 50,731 片上的准确率（C=0.01，误报全 0.0%）`[实测]`：片均分 92.71%、像素覆盖率 91.70%、**片计数占比 92.51%（已采用）**、片窗加权均分 92.71%；选片计数的理由不是它最准，而是它不需要改 Decider、也不用在像素域付那两块 4K float64 累加器的胶水代价（实测一帧 1355 ms → 95 ms）。
 
 **为什么必须双门限**：单用像素级判据（任一像素超阈值即 True）对孤立噪点极度敏感；单用面积级判据则无法区分"大面积弱响应"与"小面积强响应"。`threshold` 先过滤置信度，`coverage_threshold` 再过滤规模，两级串联。
 
@@ -591,15 +593,15 @@ def run_forever(req, on_result):
 
 | # | 缺陷 | 位置 | 影响 | 严重度 | 修复动作 |
 |---|---|---|---|---|---|
-| D-01 | 无 32 倍数尺寸闸门 | `inference_service.py:136` 之后 | 非 32 倍数输入**必然崩溃** | 🔴 高 | 插入 §3.2 的 C-01 校验 + 填充 |
-| D-01b | **`plan()` 短维为空列表崩溃** | `sliding_window.py:106-124`（`rows[-1]` / `cols[-1]`） | `min(H,W)<512 且 max(H,W)>512` 时抛 `IndexError`，如 64×4096、256×2000、100×600 | 🔴 高 | 每维坐标生成前加 `if full <= tile: return [0]` |
-| D-02 | 反射填充未处理 pad ≥ 原尺寸 | `sliding_window.py:218` | `H<256` 时 reflect 抛异常，小图直接崩 | 🔴 高 | 按 §4.2 判据在 reflect/replicate 间切换 |
-| D-03 | `plan()` 用 `H<=tile AND W<=tile` 判单块，但 `fuse()` 按实际尺寸裁剪 | `sliding_window.py:100, 168-176` | 单块分支下 `Rect` 宽高写死 512，靠 `min()` 兜底，逻辑混乱但结果正确 | 🟡 中 | 显式区分"规划尺寸"与"实际尺寸" |
+| D-01 | 无 32 倍数尺寸闸门 | `inference.py:136` 之后 | 非 32 倍数输入**必然崩溃** | 🔴 高 | 插入 §3.2 的 C-01 校验 + 填充 |
+| D-01b | **`plan()` 短维为空列表崩溃** | `window.py:106-124`（`rows[-1]` / `cols[-1]`） | `min(H,W)<512 且 max(H,W)>512` 时抛 `IndexError`，如 64×4096、256×2000、100×600 | 🔴 高 | 每维坐标生成前加 `if full <= tile: return [0]` |
+| D-02 | 反射填充未处理 pad ≥ 原尺寸 | `window.py:218` | `H<256` 时 reflect 抛异常，小图直接崩 | 🔴 高 | 按 §4.2 判据在 reflect/replicate 间切换 |
+| D-03 | `plan()` 用 `H<=tile AND W<=tile` 判单块，但 `fuse()` 按实际尺寸裁剪 | `window.py:100, 168-176` | 单块分支下 `Rect` 宽高写死 512，靠 `min()` 兜底，逻辑混乱但结果正确 | 🟡 中 | 显式区分"规划尺寸"与"实际尺寸" |
 | D-04 | `coverage` 只算整图，无 `low_confidence` 区排除 | `postprocess.py:84` | 边角伪影直接进判定 | 🟡 中 | 增加边角掩膜与 `warnings` |
-| D-05 | 16bit 图仍按 `/255.0` 归一化 | `builtin_adapter.py:114` | 16bit 图整体过曝，判定失效 | 🟡 中 | 按 `bit_depth` 选除数 |
+| D-05 | 16bit 图仍按 `/255.0` 归一化 | `builtin.py:114` | 16bit 图整体过曝，判定失效 | 🟡 中 | 按 `bit_depth` 选除数 |
 | D-06 | 无 warmup | `registry.py:150` 之后（`create` 返回处） | 首帧显著慢，易触发超时 | 🟡 中 | 加载后跑一次 512² 全零前向 |
-| D-07 | `InferenceService` 无状态机、无重试、无超时 | `inference_service.py` 整体 | 一次失败即抛异常，无人值守不可用 | 🔴 高 | 外包一层 `DetectionEngine`（§6） |
-| D-08 | `cancel()` 只置 flag，循环内不检查 | `inference_service.py:225-232` | 取消不生效，必须等整帧跑完 | 🟡 中 | 在 `on_progress` 里检查并 `raise CANCELLED` |
+| D-07 | `InferenceService` 无状态机、无重试、无超时 | `inference.py` 整体 | 一次失败即抛异常，无人值守不可用 | 🔴 高 | 外包一层 `DetectionEngine`（§6） |
+| D-08 | `cancel()` 只置 flag，循环内不检查 | `inference.py:225-232` | 取消不生效，必须等整帧跑完 | 🟡 中 | 在 `on_progress` 里检查并 `raise CANCELLED` |
 | D-09 | 无 `max_pixels` 实际拦截 | `config.py:46` 定义、仅 `_merge_config` 读取，`run()` 从不校验 | 超大图直接 OOM | 🟡 中 | `run()` 入口校验 `H*W > max_pixels` → `E-INPUT-TOO-LARGE` |
 | D-10 | `stride` 允许等于 `tile`（无重叠） | `config.py:126` | 无重叠时接缝不可见，但融合退化为拼接 | 🟢 低 | 建议 `stride ≤ tile*0.75` 告警 |
 

@@ -2,6 +2,8 @@
 
 基于 SFRNet 的超高清摩尔纹检测软件。交付形态为**带摄像头的开发板上无人值守常驻运行的服务**（上电自启、出错自恢复、断电安全）。
 
+> 🔁 **判据代际（2026-11-22 代码整理补记）**：板端 Stage-2 已不是训练权重——现行判据是 `build/export/rule.py` 烘出的**零参数规则图**（`rule_v5.rknn`，执行端 `app/adaptation/runtime/rule.py`，判据与阈值全在图里）。SFRNet 权重保留为开发机对照基线，不再上板。
+
 > 🖥️ **系统口径（2026-11-09 起）**：工程主线为 **Ubuntu 22.04**（触觉智能 Purple Pi OH2 厂商镜像）。鸿蒙（OpenHarmony 5.0 / KaihongOS）**仅作架构预留、不作为交付目标**——板上未激活的授权门会每 3615 s 强制重启，与"无人值守常驻"正面冲突（[BOARD_BRINGUP §17.1](docs/guides/BOARD_BRINGUP.md)）；WiFi 也已验证到接口级但存在两个厂商侧缺陷（[BOARD_BRINGUP §17.2](docs/guides/BOARD_BRINGUP.md)）。四层架构与适配层抽象保持不变，切换系统只动 `adaptation/`。
 
 > 🧭 **架构基准**：以 [docs/design/SOFTWARE_DESIGN.md](docs/design/SOFTWARE_DESIGN.md) **v2.3** 为准。目录结构只在该文档 §5 维护一份，本文与 `docs/ARCHITECTURE.md` 均改为指针。
@@ -47,13 +49,19 @@ python run_sim.py --source 0 --backend torch --show      # 开发机模拟板端
 python serve.py --detect a.jpg                           # 兼容壳，等价于 python -m app.main
 ```
 
-`--backend {auto,rknn,onnx,torch}` / `--model` / `--camera` / `--threshold` / `--coverage-threshold` / `--tile-size` / `--relay` 均可覆盖配置；`--model` 在首次加载**之前**生效。
+`--backend {auto,rknn,onnx,torch,rule}` / `--model` / `--camera` / `--threshold` / `--coverage-threshold` / `--tile-size` / `--relay` 均可覆盖配置；`--model` 在首次加载**之前**生效。
+
+但这里有**两套装配**，参数不是处处通用（2026-11-22 整理时查实）：`--detect` 与不带 `--loop` 的
+`--serve-net` 走主机侧 `InferenceService`（按 `config.model.active` 从模型注册表取权重），
+`--backend`/`--model` 在这条路上**不生效**（会给一行 WARN）；`--backend rule` 这类运行时后端
+选择只对常驻循环（默认形态与 `--serve-net --loop`）有效。想用规则后端跑单张图：
+`python -m app.main --backend rule --camera <图> --frames 1`。
 
 ### 库用法
 
 ```python
 from app.logic_layer.config import ConfigManager
-from app.logic_layer.inference_service import InferenceRequest, InferenceService
+from app.logic_layer.inference import InferenceRequest, InferenceService
 from app.model_layer import ModelRegistry
 
 service = InferenceService(ModelRegistry(), ConfigManager())
@@ -65,7 +73,7 @@ print(f"覆盖率: {result.coverage:.2%}  存在摩尔纹: {result.has_moire}")
 ### 测试
 
 ```bash
-python tests/smoke_board_pipeline.py    # 36 项：假适配器冒烟（不需要权重/torch）
+python tests/smoke.py    # 68 项：假适配器冒烟（不需要权重/torch）
 python tests/test_real_weights.py       # 27 项：真实权重 + HTTP 出口回归（无 torch 或无样张则跳过）
 ```
 
@@ -85,10 +93,11 @@ python tests/test_real_weights.py       # 27 项：真实权重 + HTTP 出口回
 SFRNet/
 ├── app/            # 软件主体：adaptation/ + model_layer/ + logic_layer/ + main.py（唯一组合根）
 ├── upstream/       # 上游算法代码（冻结，仅供 build_SFR 模型定义）
-├── build/          # 镜像构建：pth→ONNX→RKNN、分层打包、systemd 单元
+├── build/          # 镜像构建：export/ 出图、moire/ 造数据、probe/ 取证、package.py 打包
+├── train/          # YOLO 屏检门微调/续训（研究侧，不进镜像）
 ├── configs/        # default.yaml / models.yaml
 ├── assets/weights/ # SFR_best.pth（不入库）
-├── tests/          # 冒烟 + 真实权重回归
+├── tests/          # smoke / perf / 真权重与级联回归 / npu 实测
 └── docs/           # 📖 文档中心
 ```
 

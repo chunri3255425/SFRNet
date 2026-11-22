@@ -19,7 +19,7 @@
 
 ---
 
-## 2. 板端可用接口（对接正源，实测于 `SFRNet/app/adaptation/network/http_server.py`）
+## 2. 板端可用接口（对接正源，实测于 `SFRNet/app/adaptation/network/http.py`）
 
 控制台的一切能力都建立在这四个端点 + 一条画面回传通路之上。**本文所有字段名以该源码为准，不得凭空扩展。**
 
@@ -60,7 +60,7 @@ stage1_conf     # 仅级联开启非空（屏幕置信度）
 - **R6 降分辨率**：回传前可下采样（如长边 1080），与板端检测用原图解耦。
 - **R7 默认关闭**：`relay.enabled` 镜像默认 false，需现场/SSH 打开——**画面能力不是板上电即有，属可失败旁路**。
 
-> 画面端口/协议细节（监听 host:port、分包大小端）属板端 `wifi_frame_relay.py` 实现，**F-A 阶段需读源码冻结为契约**（见 §5）。
+> 画面端口/协议细节（监听 host:port、分包大小端）属板端 `wifi.py` 实现，**F-A 阶段需读源码冻结为契约**（见 §5）。
 
 ---
 
@@ -134,7 +134,7 @@ devices:
 
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
-| **F-A 契约冻结** | 读 `wifi_frame_relay.py` 锁定 relay 分包协议；把 §2 端点/字段与 `devices.yaml` schema 定稿写入本文件；定 `server/` 技术栈 | 单机连**一台**板：`/healthz` 通、`/stream` 能收三态、能收到至少 1 帧画面 |
+| **F-A 契约冻结** | 读 `wifi.py` 锁定 relay 分包协议；把 §2 端点/字段与 `devices.yaml` schema 定稿写入本文件；定 `server/` 技术栈 | 单机连**一台**板：`/healthz` 通、`/stream` 能收三态、能收到至少 1 帧画面 |
 | **F-B 聚合服务** | `server/`：设备注册/发现、多路 `/stream` 收敛、relay 接收与转发、`/status` 轮询、（可选）配置下发经 SSH | **≥3 台板并发**且**不回压板端检测**（板端 `elapsed_ms` 不因接入控制台而上升） |
 | **F-C Web 前端** | 设备墙 + 实况画面 + 三态角标 + "连续 N 帧"告警 + 历史/coverage 走势 | 浏览器一屏看多设备，画面最新帧、角标正确、告警可复现 |
 | **F-D 配置与标定** | 控制台回写热更新参数；导出判定流水/coverage 供板端 Q5/Q13 联合标定 | 标定数据可复用回板端设计文档耗时/阈值表 |
@@ -161,8 +161,8 @@ devices:
 | 本文概念 | 板端权威出处 |
 |---|---|
 | 三态结果语义 | `SOFTWARE_DESIGN.md` §4.3.8 / §4.4 |
-| SSE/REST 端点与鉴权 | `SFRNet/app/adaptation/network/http_server.py`（实测） |
-| 画面回传协议与 R1–R7 | §4.5.2 `IFrameRelay` + `adaptation/relay/wifi_frame_relay.py` |
+| SSE/REST 端点与鉴权 | `SFRNet/app/adaptation/network/http.py`（实测） |
+| 画面回传协议与 R1–R7 | §4.5.2 `IFrameRelay` + `adaptation/relay/wifi.py` |
 | 热更新参数 | §4.3.6 配置热更新 |
 | 设备发现（mDNS/SSH 控制面） | §4.5.1 SSH 运维通道 |
 | 判定恒真（不可信 has_moire） | §6 风险 #12 |

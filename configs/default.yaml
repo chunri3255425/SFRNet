@@ -2,7 +2,7 @@
 
 inference:
   tile_size: 512
-  stride: 256
+  stride: 256          # 仅老滑窗路径生效；片网格路径固定 tile//2（BOARD_BRINGUP §20.11）
   threshold: 0.5
   coverage_threshold: 0.01
   device: "auto"
@@ -14,7 +14,7 @@ model:
   active: "sfrnet_uhd"
   weights_path: "assets/weights/SFR_best.pth"
   tile_size: 512
-  stride: 256
+  stride: 256          # 同上：片网格路径不读它
   device: "auto"
   precision: "fp32"
 
@@ -23,9 +23,17 @@ max_pixels: 150000000
 
 # 推理后端与模型文件（SDD §4.1）
 # 镜像内置值为板端 RKNN；开发机由 HostDeviceIO 自动将 host 子节提升到 runtime 顶层
+# backend 另有一个可选值 "rule"：把编译进 NPU 的判别规则图当 Stage-2（整图结论，
+# 不出逐像素概率图）。它不读下面这两个路径，产物由 build/export/rule.py 生成：
+#   开发机 build/models/rule_v5.onnx ｜ 板端 /usr/share/moireguard/models/rule_v5.rknn
 runtime:
   backend: "rknn"
   model_path: "/usr/share/moireguard/models/model.rknn"
+  # 片级并行路数，只对 backend="rule" 生效：
+  #   0=自动（.rknn 开 3 路，.onnx 恒 1 路）、1=逐片串行（老行为）
+  # 片上实测：1 路 92 片/s → 2 路 1.9× → 3 路 2.7×（250 片/s，两核天花板）→ 4 路无增益。
+  # 数值不变：片与片无依赖，网格结论逐位一致。
+  tile_workers: 0
   host:
     backend: "torch"
     model_path: "assets/weights/SFR_best.pth"

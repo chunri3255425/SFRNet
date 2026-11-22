@@ -148,3 +148,30 @@ build/probes/
 
 # YOLO 屏幕检测数据集：图片过大不入库，仅跟踪标注与配置
 datasets/screen_detect/images/
+
+# ---- 会话级过程件（2026-11-22 代码整理时补）----
+# .scratch/  标定与探针现场，磁盘实测 934 MB：一次性脚本 + 它们吐的中间量与图。
+#            大头是四个 4K float64 数组（r6.npy / r6b.npy / r210_rel.npy /
+#            r210_frac.npy，单个 48 MB）和 ann/ 274 MB、gate1/ 258 MB 的逐张标注
+#            拼图；npu_pow.npz（2 MB）是 494 张 × 每片 DCT 功率的标定表。
+# .archive/  某轮收尾时留的“本地未提交”快照 patch，记的是当时的工作树状态，
+#            不是可复现产物。
+# 为什么不入库：这些脚本的输入是实拍图集（上面的 data/ 与 测试图片/ 两条已挡），
+# 换了机器就重算不出来；把它们跟踪进仓库只会让人以为 clone 后跑得起。
+# **纪律**（沿用 data/raw/ 那条）：代码注释里出现 `.scratch/xxx.py` 只是“这个结论
+# 当时是这么测出来的”本机指针，仓库里解析不到；结论本身必须落在 docs/ 或
+# docstring 里，例如四种 coverage 口径的对照数字写在 docs/design/CONTROL_LOGIC.md §5.1。
+.scratch/
+.archive/
+
+# 数值中间量兜底：上面按目录挡了 .scratch/ 与 build/probes/，但脚本被搬去别处跑时
+# np.save 出来的 .npy/.npz 仍会撞上 git add -A。仓库里当前没有任何被跟踪的
+# npy/npz（git ls-files 实测 0 个），确需跟踪的小夹具用 "!路径" 单独放行。
+*.npy
+*.npz
+
+# 再记一笔，免得有人以为仓库根的 check*.onnx 是谁留的备份：文件名 check{N}_{阶段}
+# 硬编码在 rknn-toolkit2 的 rknn/api/graph_optimizer*.so 与 rknn_base*.so 里
+# （strings 可见 check0_base_optimize / check1_fold_constant / check2_correct_ops /
+# check3_fuse_ops …），转换一跑就落在当前工作目录。已被上面那条 *.onnx 挡住，
+# 删了会再生；.so 里还有个 RKNN_DUMP_DIR 符号像是它的落盘开关 [推断，未实测]。

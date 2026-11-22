@@ -27,7 +27,7 @@
 | 型号 | 触觉智能（Industio）Purple Pi OH2 | 厂商提供 Linux 与 OpenHarmony 双系统支持，契合本项目双系统要求 |
 | SoC | 瑞芯微 **RK3576**（4×Cortex-A72 + 4×Cortex-A53，另含 M0 协处理器）。**大小核频率已上电实测**：A72（`CPU part 0xd08`）档顶 **2208 MHz**、A53（`0xd03`）档顶 **2016 MHz**。⚠️ 本文早期版本把两档都写成 2.2 GHz，实测 **A53 到不了 2.2 GHz** | CPU 本身也有可观算力，可作 NPU 故障时的软回退；A72 代际低于 RK3588S 的 A76，软回退与 CPU 侧融合/后处理的吞吐需按此下调预期。A53 侧预算按 **2.016 GHz** 而非 2.2 GHz 估。实测来源见 [BOARD_BRINGUP §2](../guides/BOARD_BRINGUP.md) |
 | 内存/存储 | **4 GB + 64 GB eMMC**（订单 SKU：Purple Pi OH2 开发板 4+64G）。内存类型两处口径不一致：商品主图写"高速 LPDDR5"，系列规格页另见 LPDDR4/4X@4266。**已上电实测**：`MemTotal` = 3,990,676 kB（4 GB 吻合）；`dmc available_frequencies` = **534 / 1320 / 1968 / 2736 MHz**，`normal_rate` = 1968 MHz；`androidboot.fwver` 含 `ddr-v1.10-9071d8ccd4`。⚠️ 档位表里**没有 LPDDR5 应有的 3200+ 档**，最高仅 2736 —— **"LPDDR5" 说法不成立**；但板上读不到 DDR 类型节点（debugfs 未挂载、无 `/proc/ddrinfo`），**具体是 LPDDR4 还是 4X 仍不作断言**，要坐实只能取厂商 SDK 的 dts | 量化后模型与运行时占用 < 500 MB，余量充足；4 GB 内存需注意 4K 图融合缓冲（见 §6 风险 #1）。内存类型只影响实测吞吐预期，不改变任何接口设计。eMMC 代际已实测确认为 **5.1**（`mmc0: new HS400 Enhanced strobe MMC card`）；容量也已板端实证：`/sys/block/mmcblk0/size` = 120,832,000 × 512 B = **57.6 GiB**（标称 64 GB），与订单 SKU 相符。刷官方 Ubuntu 后两边再各自实测一次：`free -m` 可见 **3895 MiB**、rootfs 分区 **59,332,607,488 B = 55.25 GiB**（[BOARD_BRINGUP §10](../guides/BOARD_BRINGUP.md)） |
-| NPU | **6 TOPS INT8**（RKNN 生态，支持 INT4/INT8/INT16/FP16/TF32；片上 SRAM 1 MB）。**已实测调频档位**：`/sys/class/devfreq/27700000.npu` = **300–950 MHz** 八档（300/400/500/600/700/800/900/950），governor `rknpu_ondemand` | 推理后端锁定 **RKNN Runtime**；模型走 `pth → ONNX → RKNN` 转换链。TOPS 与 RK3588S 同为 6，但核数与微架构不同（公开资料对核数口径不一致，本文不作断言），单块延迟必须以实板实测为准。⚠️ governor 是 `ondemand`，意味着**冷启动首帧跑在低档**，任何延迟实测都必须先 warmup 再计时，否则数字不可比（与 `torch_runtime` 的 warmup 治理同一动机） |
+| NPU | **6 TOPS INT8**（RKNN 生态，支持 INT4/INT8/INT16/FP16/TF32；片上 SRAM 1 MB）。**已实测调频档位**：`/sys/class/devfreq/27700000.npu` = **300–950 MHz** 八档（300/400/500/600/700/800/900/950），governor `rknpu_ondemand` | 推理后端锁定 **RKNN Runtime**；模型走 `pth → ONNX → RKNN` 转换链。TOPS 与 RK3588S 同为 6，但核数与微架构不同（公开资料对核数口径不一致，本文不作断言），单块延迟必须以实板实测为准。⚠️ governor 是 `ondemand`，意味着**冷启动首帧跑在低档**，任何延迟实测都必须先 warmup 再计时，否则数字不可比（与 `runtime/torch` 的 warmup 治理同一动机） |
 | 2D 引擎 | 自带 **RGA** 光栅化加速器 | resize / 色彩转换 / 格式拷贝可卸载到 RGA，4K 输入预处理与融合缓冲的 CPU 占用由此降低（`adaptation` 侧可选优化，非首版必需） |
 | 视频输入 | **多路 AHD 视频输入**（商品主图标注） | 除 MIPI CSI 外还有一条候选取帧通路；AHD 若走 V4L2 节点，则 `ICameraAdapter` 只是换一个 device path，业务层无感。是否启用属 Q2 剩余项 |
 | 视频解码 | **4K@120fps**（商品主图标注；RK3576 硬件解码器） | 若输入源是码流而非裸帧，解码可交硬件，不必占用 NPU 与 CPU；当前设计按裸帧取图，暂未用到 |
@@ -39,13 +39,38 @@
 **推理后端决策随之收敛**：
 
 ```
-开发机（x86 + PyTorch）:  TorchRuntime（已有实现）
-板端 Linux/OpenHarmony:  RknnRuntime（新增，实现 IRuntimeAdapter）
-                          └── 模型文件：SFR_best.pth → ONNX → rknn（int8 量化）
-软回退：                   OnnxRuntime CPU（NPU 驱动异常时），A53 小核上仍可低速运行
+开发机（x86 + PyTorch）:  TorchRuntime（仅开发机；板端平台直接拒装）
+板端（Linux / OpenHarmony）: RknnRuntime（实现 IRuntimeAdapter）
+
+Stage-1 屏检：        yolo*.pth → ONNX → .rknn
+Stage-2 去纹判定：     两套后端共存
+                      · SFRNet：SFR_best.pth → ONNX → .rknn
+                        （上板实测的是 fp16；int8 从未转过——缺真实屏摄校准集）
+                      · RuleRuntime：build/export/rule.py 烘的零参数规则图，每片一个标量
+                        （开发机 .onnx 与板上 .rknn 均已实测：4K 整帧 165 片的 coverage
+                          与主机逐位一致、每片 14.0 ms，见 [BOARD_BRINGUP §20](../guides/BOARD_BRINGUP.md)；
+                          它的 int8 w8a8 已否证，数值依据见下面那段）
+无 CPU 后路：          板端只允许 NPU。factory 与 RuleRuntime 双层硬闸拦住 torch/onnx
+                      （2026-11-22 定；这里早期写的“OnnxRuntime CPU 软回退”已作废，
+                        不要按它理解现在的行为）
 ```
 
 RKNN Runtime 是纯 C 库，Python 侧通过 `rknn-toolkit-lite2`（板端推理用）调用，无需在板上装 PyTorch。
+
+**规则图的 int8 为什么不采用（2026-11-22 探针复算 `[实测]`，脚本 `.scratch/int8_analytic.py`，本机过程件）**：
+规则图的算力 98.7% 落在两个 DCT conv 上，按 512 MAC/cycle 建模是算力受限，batch 与摊权重都
+不提速，唯一能吃到 2× 的杠杆是 int8 MAC 速率——而那要求**激活也量化**。解析模拟逐片对照
+float64 参照（200 片，其中参照 prob>0.5 的 89 片）：
+
+| 量化面 | 片级翻转（>0.5） | 漏检（有→无） | 误报（无→有） | 摩尔纹片均 prob |
+|---|---|---|---|---|
+| 只量 DCT 矩阵（≈ w8a16） | 0/200 | 0/89 | 0/111 | 0.6435 → 0.6405 |
+| 只量谱（≈ w8a8 的激活侧） | 55/200 | 55/89 | 0/111 | 0.6435 → 0.2456 |
+| 两者叠加 | 58/200 | 57/89 | 1/111 | 0.6435 → 0.2445 |
+
+读法：w8a16 无害但也无速（NPU 的 int8 MAC 速率吃不到），w8a8 直接打烂判据——根因在
+per-tensor 量化把 |Z| 低于半格的谱系数压成 0，环带均值系统性偏低。所以板端实时性只能从
+分片/核数/并发这类调度量上挣，不要再去碰量化。
 
 > **版本约束的两次更正（2026-11-06，已闭环）**：本文早期写的“转换端 `rknn-toolkit2` 与板上 `librknnrt.so` **同主版本**”
 > 是未经证实的假定，**已被实测推翻**：板上 runtime 为 **2.1.0 (2024-08-07)**，而转换端用 PyPI 能装到的 **2.3.2**
@@ -65,13 +90,13 @@ RKNN Runtime 是纯 C 库，Python 侧通过 `rknn-toolkit-lite2`（板端推理
 | 操作系统 | Linux 发行版 / OpenHarmony（Purple Pi OH2 官方镜像为基座） | 双系统各构建一条流水线 |
 | 运行时 | Python 解释器 + **rknn-toolkit-lite2**（板端 NPU 推理） | 随镜像预装，不依赖联网；板上不装 PyTorch。⚠️ **“预装”是我们构建镜像那一步的责任，不是拿官方固件就有**：实测官方 Ubuntu 22.04.5 只有 Python 3.10.12（cp310 与 lite2 wheel 口径对齐 ✓），`numpy`/`cv2`/`rknn-toolkit-lite2` **均未安装**（BOARD_BRINGUP §10）。本轮已用 WiFi 经 apt/pip 现场补齐（§11.3），但**现场能装不等于交付形态合格**，这些件必须固化进镜像 |
 | 应用本体 | `app/` 打包后的检测程序 | 上电自启动（systemd / 系统服务） |
-| 模型资产 | 量化后的 **.rknn** 模型文件：`model.rknn`（SFRNet，由 `SFR_best.pth` 转换）+ `yolo_screen.rknn`（v2.4 新增的 Stage-1 屏幕 YOLO） | 随镜像固化于 `/usr/share/moireguard/models/`；YOLO 文件缺失为**非致命**（自动禁用级联回退全图路径，见 §4.3.5） |
+| 模型资产 | **.rknn** 模型文件：`model.rknn`（SFRNet，由 `SFR_best.pth` 转换，**产物是 fp16**——int8 从未转过，缺真实屏摄校准集，见 BOARD_BRINGUP §14.5）+ `yolo_screen.rknn`（v2.4 新增的 Stage-1 屏幕 YOLO，同样 fp16）+ `rule_v5.rknn`（Stage-2 的零参数规则图，`build/export/rule.py` 烘；开发机对应 `build/models/rule_v5.onnx`，**板上已实测：加载 0.9 s、每片 12.6–14.0 ms、4K 165 片 2.31–2.35 s**，见 [BOARD_BRINGUP §20](../guides/BOARD_BRINGUP.md)；§20.9 的算子融合（52→50 算子）把单片中位从 7.79 降到 7.54 ms，但端到端被 host 侧每片转置淹没，帧耗只降 2.6%） | 随镜像固化于 `/usr/share/moireguard/models/`；YOLO 文件缺失为**非致命**（自动禁用级联回退全图路径，见 §4.3.5） |
 | 配置 | `default.yaml` 烧录内置默认值 | 现场可覆盖（见 §4.3.6） |
 
 **构建流水线**（开发机执行，产出镜像）：
 
 ```
-SFR_best.pth ──导出──> ONNX ──rknn-toolkit2（x86 开发机）──> .rknn（int8 量化）
+SFR_best.pth ──导出──> ONNX ──rknn-toolkit2（x86 开发机）──> .rknn（fp16；int8 已否证，见 §1.1）
 app/ 源码    ──打包──> 独立运行包（免依赖安装）
                 │
                 ├──> Linux：        Purple Pi OH2 官方镜像 + 根文件系统叠加（systemd 自启服务）
@@ -95,7 +120,7 @@ app/ 源码    ──打包──> 独立运行包（免依赖安装）
 |---|---|---|
 | 开发板 | **触觉智能 Purple Pi OH2**（RK3576，4GB+64GB，NPU 6 TOPS） | 板型已锁定，见 §1.1；SoC 型号曾误记为 RK3588S，已按实购订单更正（订单为 OH2 4+64G 整板与 OH2 核心板+IMX415 摄像头各 2 件）；厂商 SDK（RKNN/RKISP/刷机工具）允许进入适配层与 `build/`，仍不允许进入逻辑层与模型层 |
 | 操作系统 | **Linux 与鸿蒙双系统，同一套代码** | 系统差异全部收敛到适配层，业务代码零分支；镜像构建各自一条流水线 |
-| 开发语言 | **Python + PyTorch（开发）/ RKNN Runtime（板端）** | 板端推理走 NPU，加载 int8 量化的 .rknn 模型；板上不跑 PyTorch |
+| 开发语言 | **Python + PyTorch（开发）/ RKNN Runtime（板端）** | 板端推理只走 NPU，加载 .rknn（SFRNet 与 YOLO 实机跑的都是 **fp16** 产物）；板上不跑 PyTorch，也不留 CPU 后路 |
 | 摄像头接口 | 抽象为"取帧"能力 | Linux 走 V4L2（MIPI CSI 经 RKISP），鸿蒙走相机 Kit，上层无感知 |
 | 上电行为 | 应用自启动 | 烧录后无需登录 shell 手动拉起 |
 | 远程运维 | **SSH 连接开发板** | 开发与运维统一走 SSH：部署/更新配置用 `scp`，查日志、重启服务、故障排查走 `ssh`；SSH 仅是**运维控制面**，不进检测数据面（检测链路不依赖网络可达） |
@@ -116,6 +141,22 @@ app/ 源码    ──打包──> 独立运行包（免依赖安装）
 > **可行的收敛方向**（均需实测验证，按依据强弱排序）：① **结构化裁剪砍 `d3`**——与实测热点直接对应，是本项目最有依据的一条；② **降低检测输入分辨率**——布尔判定不要求像素级定位，1080p 下块数降到约 28，缩放记入 `InputMeta.scale_x/y`；③ **加大 stride**（256→512 使块数近乎减半，代价是融合边界质量）；④ 用 **RGA** 承担缩放与格式转换，把 CPU 从数据通路里摘出来。
 >
 > 另需正视：已购 IMX415 本身就是 4K 级传感器，**112 块是常态负载而不是最坏情况**。
+>
+> **Stage-2 换规则图后（2026-11-22 板端实测 `[实测]`，[BOARD_BRINGUP §20](../guides/BOARD_BRINGUP.md)）**：
+> 4K 一帧 165 片（4096×3072）端到端 **2.35 s**，每片 14.29 ms；同图同引擎代码在开发机
+> （onnx CPU）是 2.26 s，两边 coverage **0.339394**、pmax **0.622459**、片数 165 **逐位一致**。
+> 单进程 NPU 占用只有 Core0 46% / Core1 22%——不是算力受限；两进程并发把吞吐抬到 1.98×
+> （140.75 片/s），三进程 2.25× 触到两核天花板。batch 不可用：static shape 下喂 2 片不报错
+> 但**静默只算第一片**。所以：4K 单帧 2.35 s 是当前真实指标，上面 SFRNet 时代的 3.02 s/块、
+> 340 s/帧已不适用；但 2.35 s 仍达不到实时，且并发只提**吞吐**不提单帧延迟（引擎逐片串行）。
+>
+> **两个降延迟的旋钮，量级差很多（2026-11-22 实测，[BOARD_BRINGUP §20.7 / §20.8](../guides/BOARD_BRINGUP.md)）**：
+> ① **stride**（片长不动，网格 256→512）：4K 165 片→48 片，552 ms（**0.25×**），
+> 全量 494 张准确率 92.51%→90.89%、召回 87.7%→85.0%、**误报仍 0**，翻转 12 张全是摩尔纹漏检。
+> ② **片长**（512→1024，stride 同步翻倍以保持采样密度）：35 片、1536 ms（**0.77×**），
+> 但判据常量按 512 标定，要重烘图 + 重标 AMP_RAW + 494 张复测。
+> 片长的收益之所以小于「总计算 ∝ N」的预期，是因为规则图是 batch=1 的 GEMV，512 时只用到
+> 理论上限的 7% 算力，片长变大反而把阵列喂得更饱（1024 到 13%）——**提利用率有效，省时间有限**。
 ---
 
 ## 3. 总体架构
@@ -228,7 +269,7 @@ graph TD
 >
 > 本次 `[推算]` 未被证伪：原估"NPU 单前向几十 ms"命中（实测 64.7 ms）；原估"含 NMS 后处理 < 200 ms"成立（实测 77.5 ms，后处理占 12.1 ms）。但**瓶颈归属与原设想不同**——NPU 前向占合计的 83%，CPU 后处理只占 16%；原表述把"NMS 后处理"当作需要担心的那一项，实测显示它不是。int8 转换后前向仍可能进一步下降，后处理耗时不变。
 >
-> 后处理内部结构实测：`decode_boxes` 在 conf=0.05 与 conf=0.25 下耗时基本不变（**12.12 vs 12.16 ms** `[实机]`），因为开销主要花在**对全 8400 个 anchor 做 DFL 投影**（阈值截断发生在其后），而非 NMS 候选框数量。含义：靠提高 conf 门限来降后处理耗时无效；真要降它需只对有正类激活的 anchor 做投影（`yolo_postprocess.py` 第 79–80 行无条件投影、第 103 行才截断，此处不属本次修改范围）。另 `to_nchw` 布局变换实测 0.68 ms，可忽略。letterbox 实测走 `cv2.INTER_LINEAR`（板端有 cv2，未回退 numpy 最近邻），与训练预处理一致。
+> 后处理内部结构实测：`decode_boxes` 在 conf=0.05 与 conf=0.25 下耗时基本不变（**12.12 vs 12.16 ms** `[实机]`），因为开销主要花在**对全 8400 个 anchor 做 DFL 投影**（阈值截断发生在其后），而非 NMS 候选框数量。含义：靠提高 conf 门限来降后处理耗时无效；真要降它需只对有正类激活的 anchor 做投影（`decode.py` 第 79–80 行无条件投影、第 103 行才截断，此处不属本次修改范围）。另 `to_nchw` 布局变换实测 0.68 ms，可忽略。letterbox 实测走 `cv2.INTER_LINEAR`（板端有 cv2，未回退 numpy 最近邻），与训练预处理一致。
 >
 > **原图坐标域也已验收（2026-11-16 补，见 BOARD_BRINGUP §19.3）**：上表的框级比对都在 640 letterbox 域做，不足以证明 `detect()` 末尾的 `(cx-pad)/scale` 还原正确。补测：板上真实工程树与 Windows onnxruntime 各跑**同一个** `YoloScreenGate.detect` 吃 12 张原始分辨率图，conf=0.05 下 board 4 / ref 4 全匹配，平均 IoU **0.9980**、worst **0.9949**、100% ≥ 0.95、conf 相对误差均值 1.201%（max 1.893%）；板端原图框反算回 640 域与已有参照也吻合（尺寸不符 0）。同时坐实：**输出坐标契约是原图域，不是 640 域**（§4.2）。
 
@@ -304,7 +345,7 @@ class IDeviceIO(ABC):
 | 能力 | Linux 实现 | 鸿蒙实现 |
 |---|---|---|
 | 取帧 | `V4L2CameraAdapter`（`/dev/video*`，MIPI CSI 经 RKISP 驱动） | `OhosCameraAdapter`（相机 Kit / NAPI） |
-| 推理 | `RknnRuntime`（rknn-toolkit-lite2 + NPU）/ `TorchRuntime`（开发机） | 同左（OH 版 Purple Pi OH2 同样暴露 RKNN Runtime） |
+| 推理 | `RknnRuntime`（rknn-toolkit-lite2 + NPU）/ `TorchRuntime`（开发机）；Stage-2 还可换 `RuleRuntime`（规则图，同一块 NPU） | 同左（OH 版 Purple Pi OH2 同样暴露 RKNN Runtime） |
 | 配置路径 | `/etc/moireguard/`（镜像内置）+ `/var/lib/moireguard/`（现场覆盖） | 应用沙箱 `filesDir` |
 | 日志 | `/var/log/moireguard/`（logrotate 滚动） | 应用沙箱 `cacheDir/logs/` |
 | 自启动 | systemd 服务单元 | 系统服务 / ArkTS 壳拉起 |
@@ -316,7 +357,7 @@ class IDeviceIO(ABC):
 
 1. **输入布局**：已上板实测——`.rknn` 吃 **NHWC float32**，与契约 C1（`NCHW` float32）不一致，permute 放在 `RknnRuntime.infer` 内部，**不改动 IInputAdapter**（证据：NHWC 喂法对 onnxruntime 参照相关系数 1.0000 / 最大相对误差 0.0059，NCHW 喂法相关系数 0.0321，[BOARD_BRINGUP §14.4](../guides/BOARD_BRINGUP.md)）。⚠ 两件事不能凭字面推：① 模型头里的 `framework layout: NCHW` 指**源框架布局**，不是运行时输入布局；② **输出侧已经是 NCHW `[1,1,H,W]`**，不能再“反向 permute”（旧代码那个 `shape[1]==1` 就转的分支在单通道上恰好会把对的弄错）。归一化仍在调用侧做完：转换烘的是**恒等** mean/std，`.rknn` 不会帮你 /255。
 2. **输出域**：.rknn 导出时**不加** sigmoid/激活后处理，保证 `infer` 返回的仍是 raw logits（契约 O1）。RKNN 转换参数里显式关掉 `reorder` 之外的自动后处理。
-3. **量化校准集**：`build/export_model.py` 需提供 100–200 张真实屏摄图作校准集（不能只用合成图，见 §6 风险 #7），量化后逐块比对 logits，相对误差 > 5% 则降位宽或回退 fp16 的 .rknn。⚠ 因为烘的是恒等预处理，校准集**不能直接把 jpg 路径交给 toolkit**（那样它按 0–255 域统计，与真实推理输入不同域）；导出脚本已改为用与推理同一套预处理落成归一化 `.npy` 再列进 txt（§14.4）。
+3. **量化校准集**：`build/export/model.py` 需提供 100–200 张真实屏摄图作校准集（不能只用合成图，见 §6 风险 #7），量化后逐块比对 logits，相对误差 > 5% 则降位宽或回退 fp16 的 .rknn。⚠ 因为烘的是恒等预处理，校准集**不能直接把 jpg 路径交给 toolkit**（那样它按 0–255 域统计，与真实推理输入不同域）；导出脚本已改为用与推理同一套预处理落成归一化 `.npy` 再列进 txt（§14.4）。
 4. **导出自检不能只看 dummy**（实测教训，[BOARD_BRINGUP §13.3](../guides/BOARD_BRINGUP.md)）：FRM 是数据相关的硬路由，trace 导出会把“选哪条专家分支”钉死在 dummy 上，而自检用的正是同一个 dummy，所以它永远报绿。必须另做多样本（至少几十张真实切片）的路由一致性抽检。
 
 **YOLO 模型的三个实现要点（v2.4 新增）**：
@@ -556,7 +597,7 @@ stateDiagram-v2
 3.  输入适配：input_adapter.from_external(frame)
       → Tensor[1,3,H,W] + InputMeta
 3.5 [v2.4 新增] 级联门控（若 cascade.enabled）：
-      - Stage-1: yolo_runtime.infer(降采样帧) → DetectionBoxOutput
+      - Stage-1: runtime/yolo 的 infer(降采样帧) → DetectionBoxOutput
       - 失败 → YoloError 归入恢复表新行（见 4.3.5），本次会话内禁用级联，
                回退全图路径（P3：级联是优化不是依赖，禁用即恢复）
       - 有屏幕框（含灰区 prefer_screen）→ 跳到步骤 7，result = screen_detected
@@ -595,6 +636,7 @@ has_moire = coverage > pixel_ratio      ★ 布尔结论
 ```
 
 - **双门限设计**：单点判据（任一像素超阈值即 True）对孤立噪点极敏感；纯占比判据更稳。`threshold`（像素级，默认 0.5）先过滤置信度，`pixel_ratio`（面积级，默认 0.01）再过滤规模。
+- **上式里的“像素”在规则后端下应读作“片”**：Stage-2 换成零参数规则图后，每片只出一个结论，`logits` 的形状是片网格 `[rows, cols]`，所以 `coverage = mean(prob > threshold)` 的分母是片数。粒度随帧尺寸变（4K 112 片 → 0.9%，720p 8 片 → 12.5%），日志里要与 `tiles` 并排看。SFRNet 逐像素后端不受影响。
 - `coverage` 保留在日志与诊断结果中，便于现场标定 `pixel_ratio`，但**不写入对外契约**。
 - 判定结果**逐帧独立**：不做跨帧平滑、不做历史投票。连续多帧的一致性判断（如"连续 N 帧为 True 才告警"）属应用侧策略，V1 不做，但在 Decider 接口上预留 `smooth` 参数位。
 
@@ -770,54 +812,64 @@ SFRNet/
 │   ├── adaptation/             # ── 适配层（对上层零感知，不得 import logic_layer）
 │   │   ├── base.py             # ★ 抽象聚合 + DTO + 反向注入用 Protocol（IImageService 等）
 │   │   ├── factory.py          # ★ 平台探测与实现装配（唯一允许平台分支处；缺能力显式报错）
-│   │   ├── camera/{base,v4l2,ohos,fake,file_camera}.py
-│   │   ├── runtime/{base,onnx_runtime,torch_runtime,rknn_runtime}.py
-│   │   ├── relay/{base,wifi_frame_relay}.py   # WiFi 画面回传（旁路，见 §4.5）
-│   │   ├── network/http_server.py             # HTTP/SSE 网络出口（代码先行，见 §4.4 待 Q4）
-│   │   └── device_io/{base,linux_io}.py       # ohos_io 未落地（见下表缺口）
+│   │   ├── camera/{base,v4l2,ohos,fake,file}.py
+│   │   ├── runtime/{base,onnx,torch,rknn,rule,yolo}.py
+│   │   ├── relay/{base,wifi}.py               # WiFi 画面回传（旁路，见 §4.5）
+│   │   ├── network/http.py                    # HTTP/SSE 网络出口（见 §4.4 待 Q4）
+│   │   └── device_io/{base,linux}.py          # ohos 分支未落地（见下表缺口）
 │   ├── model_layer/            # ── 模型层
 │   │   ├── contracts.py        # ★ 预留接口 + 数据契约（v2.4 新增 DetectionBoxOutput D1–D3）
-│   │   ├── builtin_adapter.py  # 默认实现（RGB 输入 / 单通道输出）
-│   │   ├── registry.py         # ModelRegistry（strict：未知 model_id / 缺权重即抛）
-│   │   └── detectors/
-│   │       ├── sfrnet_detector.py             # DetectorCore 实现（Stage-2）
-│   │       └── yolo_detector.py               # [v2.4 新增] YOLO 内核 + 输入/输出 Adapter（Stage-1）
+│   │   ├── builtin.py          # 默认实现（RGB 输入 / 单通道输出）
+│   │   ├── registry.py         # ModelRegistry（strict：未知 model_id / 缺权重 即抛）
+│   │   └── detectors/          # 惰性导出（PEP 562），板端不装 torch 也能 import
+│   │       ├── sfrnet.py       # DetectorCore 实现（Stage-2，需 torch）
+│   │       ├── yolo.py         # [v2.4] YOLO 内核 + 输入/输出 Adapter（Stage-1）
+│   │       ├── decode.py       # [v2.4] YOLO 后处理（numpy，纯 CPU，与训练侧共用一份）
+│   │       └── prior.py        # 规则判据先验（DCT 载波参数，开发机对照用）
 │   └── logic_layer/            # ── 逻辑层（不 import 平台 SDK / 不碰 state_dict / 不做平台判断）
-│       ├── engine.py           # DetectionEngine（状态机 + 逐帧 + 重试降级 + v2.4 级联门控/ROI 路由，无独立 supervisor）
+│       ├── engine.py           # DetectionEngine（状态机 + 逐帧 + 重试降级 + v2.4 级联门控/ROI 路由）
 │       ├── bootstrapper.py     # 7 步启动序列（DEFAULTS 由 config.AppConfig 导出）
-│   ├── config.py           # ★ 默认值唯一真源（dataclass）+ 分层 merge（v2.4 新增 cascade 节）
+│       ├── config.py           # ★ 默认值唯一真源（dataclass）+ 分层 merge（含 cascade 节）
 │       ├── decider.py          # 双门限判定（全流程唯一一次 sigmoid）
-│       ├── sliding_window.py   # 切块与余弦窗融合
+│       ├── window.py           # 滑窗切块与余弦窗融合（老像素路）
 │       ├── postprocess.py      # 开发/标定侧后处理（与 Decider 同界同判）
-│       ├── inference_service.py# 单次推理编排（图片路径 → 结果，供网络出口调用）
-│       ├── export_service.py   # 掩膜/热力图/JSON 导出
+│       ├── inference.py        # 单次推理编排（图片路径 → 结果，供网络出口调用）
+│       ├── export.py           # 掩膜/热力图/JSON 导出
+│       ├── classic.py          # 经典 CV 对照实现（开发机基线，不上板）
 │       └── exceptions.py       # 错误分类与恢复策略映射
 │
-├── build/                      # 镜像构建流水线
-│   ├── export_model.py         # SFR_best.pth → ONNX → .rknn（int8 量化 + 一致性比对）
-│   ├── export_yolo.py          # [v2.4 新增] yolo pt → 无后处理 ONNX → .rknn（int8 + 框级一致性比对）
-│   ├── calib_yolo/             # [v2.4 新增] YOLO int8 校准集目录
-│   ├── package_app.py          # app/ → 分层 stage 打包（/opt /etc /usr /var + systemd）
+├── build/                      # 镜像构建流水线（目录表达领域，文件名只留一个词）
+│   ├── export/{model,rule,yolo,frm}.py        # 权重/规则/算子图 → onnx/rknn
+│   ├── moire/{synth,pairs,label}.py           # 仿真/配对/像素标注
+│   ├── probe/                                  # 一次性取证：split shapes ops compat run x86
+│   │                                          #   scale threshold annotate probmap bands
+│   │                                          #   symmetry routing semantics distribution summary
+│   ├── {check,package,images}.py              # 文档自检 / 打包 / 图片整理
 │   ├── image_linux/moireguard.service
-│   └── tools/view_relay.py     # 上位机画面查看器
+│   ├── tools/view_relay.py     # 上位机画面查看器
+│   ├── calib_yolo/             # [v2.4] YOLO int8 校准集目录
+│   ├── models/  dist/  probes/  # 产物，不入库
 │
 ├── train/
-│   └── train_yolo_screen.py    # [v2.4 新增] YOLO 微调脚本（研究侧，不进镜像；ultralytics 不进镜像）
-├── datasets/screen_detect/     # [v2.4 新增] 实拍标注数据（不入库，本地；标注规范见 datasets/README）│
+│   └── {yolo,resume}.py        # [v2.4] YOLO 微调 / 续训（研究侧，不进镜像）
+├── datasets/screen_detect/     # [v2.4] 实拍标注数据（不入库，本地；规范见 datasets/README）
 ├── configs/{default.yaml,models.yaml}   # 镜像内置默认配置（超时待 M1 实测回填）
 ├── {train,predict}.py          # 上游训练/预测脚本（研究侧，不进镜像）
 ├── run_sim.py                  # 开发机模拟器：FileCamera 接进 DetectionEngine
 ├── serve.py                    # 兼容壳 → app.main（不再承接新逻辑）
-└── tests/{smoke_board_pipeline,test_real_weights}.py
+└── tests/
+    ├── {smoke,perf}.py         # 冒烟（68 项）/ 性能实测
+    ├── {test_real_weights,test_yolo_cascade}.py
+    └── npu/{analysis,bottleneck}.py
 ```
 
-**引用约束**：`upstream.*` 只允许在 `app/model_layer/detectors/sfrnet_detector.py` 中 import 一次；`v4l2`、`ohos`、`onnx`、`rknn` 等平台字样只允许出现在 `app/adaptation/` 与 `build/` 之下；**适配层不得 import 逻辑层**（依赖方向只能是 逻辑层 → 模型层 → 适配层），跨层反向调用一律走 `adaptation/base.py` 里的 Protocol 由组合根注入。
+**引用约束**：`upstream.*` 只允许在 `app/model_layer/detectors/sfrnet.py` 中 import 一次；`v4l2`、`ohos`、`onnx`、`rknn` 等平台字样只允许出现在 `app/adaptation/` 与 `build/` 之下；**适配层不得 import 逻辑层**（依赖方向只能是 逻辑层 → 模型层 → 适配层），跨层反向调用一律走 `adaptation/base.py` 里的 Protocol 由组合根注入。
 
 **目录树与本文的已知缺口**（代码先行、文档尚未立项的部分，不粉饰）：
 
 | 本文声称 | 实际状态 |
 |---|---|
-| `model_layer/detectors/yolo_detector.py`、`yolo_postprocess.py`、`build/export_yolo.py`、`train/train_yolo_screen.py`、`app/adaptation/runtime/yolo_runtime.py`、engine 级联门控/三态、`configs` cascade 节、`tests/test_yolo_cascade.py` | **代码已落地**（2026-11-12，级联冒烟 34/34 通过）；缺**真实权重**（待 M-A 数据训练 → M-B 转换上板），无权重时按 P3 自动降级 v2.3 行为 |
+| `model_layer/detectors/yolo.py`、`decode.py`、`build/export/yolo.py`、`train/yolo.py`、`app/adaptation/runtime/yolo.py`、engine 级联门控/三态、`configs` cascade 节、`tests/test_yolo_cascade.py` | **代码已落地**（2026-11-12，级联冒烟 34/34 通过）；缺**真实权重**（待 M-A 数据训练 → M-B 转换上板），无权重时按 P3 自动降级 v2.3 行为 |
 | `device_io/ohos_io.py` | 未落地，鸿蒙侧仅有 `camera/ohos.py` 占位 |
 | `build/image_ohos/`、`build/calib/` | 目录不存在；鸿蒙流水线与 RKNN 量化校准集待 M1 |
 | `logic_layer/supervisor.py` | 无此文件，重试与降级已并入 `engine.py`（C-10~C-13） |
@@ -841,15 +893,15 @@ SFRNet/
 | 9 | WiFi 画面回传挤占检测资源或网络不稳 | 旁路故障干扰主业务 | 回传走独立线程 + 单槽队列（R1/R2），失败固定退避重连、连续 5 次仅 DEGRADED 告警（R5）；默认关闭（R7） |
 | 10 | **FRM 路由网络退化（实测）** | 当前 `SFR_best.pth` 的 router 对四类给出接近均匀的 softmax（`[0.22, 0.28, 0.25, 0.25]`，top1-top2 差仅 0.018–0.054），常见输入上几乎恒选专家 1 | ⇒ **“按 block 特征动态选专家”这个核心叙事在当前权重下不成立**，与部署无关但是答辩/论文风险。需加辅助监督或负载均衡 loss 重训；注意这与风险 #2 是两个问题，静态化（#2）只会让错误的选择能跑在 NPU 上 |
 | 11 | **NPU 实测延迟：单块 3.0 s、整帧 96.6 s（fp16）** | 两个量纲必须分开记：§14.4 的 2.83–3.15 s 是**单块 512×512**（当时把它当“单帧”写，低估了一个数量级）；产品代码路径实测 2275×1279（**32 块）端到端 96.6 s**（[BOARD_BRINGUP §15.1](../guides/BOARD_BRINGUP.md)）。照此 4K（112 块）约 340 s ≈ 0.003 fps | 待定目标帧率（§7 Q3）后才能定口径。优先级待查项：先查清是否大量算子落 CPU（折合有效吞吐仅 0.12 TFLOP/s，不到名义 fp16 峰值的一成），再谈 int8 / 降分辨率 / 抽帧。在量化与优化前，文档里不要出现“实时”字样 |
-| 12 | **判定层完全无标定：干净图也报“有摩尔纹”（实测，本轮新增）** | 产品路径跑三张真实内容图：摩尔纹照片 coverage 0.9973，**干净屏摄截图 0.9991 / 0.9815**——按现配置（threshold 0.5 / coverage_threshold 0.01）**布尔输出对任何输入都是 True**，与 Q5 早先只在零内容图上观测到的现象一致，本轮把它坐实到了真实内容。已排除三个候选归因：预处理口径（与 train.py 的 ToTensor/[0,1]/RGB 一致，上游 predict.py 可证）、tile 尺寸与训练 crop 不符（训练就是 512）、转换链引入误差（x86 torch 与板端 rknn 同图 coverage 对齐到 4e-6）。未排除：模型精度本身 + 负样本定义（干净截图充满了高频文本） | `build/_probe_threshold.py` 实测阈值扫描：thr=0.8 时摩尔纹 0.8764 vs 干净上界 0.4119（差 +0.4645）——**双门限能分开，但起作用的是 coverage_threshold（需从 0.01 提到 0.5 量级）而不是 threshold**。具体取值属产品口径，且 3 张样本不是标定；待摄像头接入后拿真实负样本重标（见 Q5） |
-| 13 | **平台误判：厂商 Ubuntu 固件被认成鸿蒙（已修）** | `detect_platform()` 拿 `/system/etc` 当 OH 特征，而 RK3576 厂商固件本身就带 `/system/etc/{firmware,lib}` ⇒ 真板子被判 ohos，`make_camera()` 又在 OHOS 分支里抢跑 return，**显式传的 `--camera xxx.jpg` 被无声丢弃**，最后以 `camera_open_fail×3` FATAL 收摊（[BOARD_BRINGUP §15.2](../guides/BOARD_BRINGUP.md)） | OH 判据收紧为只认 `/etc/ohos_release`（真 OH 硬件用 `MOIREGUARD_PLATFORM=ohos` 显式指定）；`make_camera()` 改为“显式 device 优先，平台只挑默认值”，同时保留 OH 无 device / OH+设备节点的显式抛错。两个缺陷已进 `tests/smoke_board_pipeline.py` §9 钉住 |
+| 12 | **判定层完全无标定：干净图也报“有摩尔纹”（实测，本轮新增）** | 产品路径跑三张真实内容图：摩尔纹照片 coverage 0.9973，**干净屏摄截图 0.9991 / 0.9815**——按现配置（threshold 0.5 / coverage_threshold 0.01）**布尔输出对任何输入都是 True**，与 Q5 早先只在零内容图上观测到的现象一致，本轮把它坐实到了真实内容。已排除三个候选归因：预处理口径（与 train.py 的 ToTensor/[0,1]/RGB 一致，上游 predict.py 可证）、tile 尺寸与训练 crop 不符（训练就是 512）、转换链引入误差（x86 torch 与板端 rknn 同图 coverage 对齐到 4e-6）。未排除：模型精度本身 + 负样本定义（干净截图充满了高频文本） | `build/probe/threshold.py` 实测阈值扫描：thr=0.8 时摩尔纹 0.8764 vs 干净上界 0.4119（差 +0.4645）——**双门限能分开，但起作用的是 coverage_threshold（需从 0.01 提到 0.5 量级）而不是 threshold**。具体取值属产品口径，且 3 张样本不是标定；待摄像头接入后拿真实负样本重标（见 Q5） |
+| 13 | **平台误判：厂商 Ubuntu 固件被认成鸿蒙（已修）** | `detect_platform()` 拿 `/system/etc` 当 OH 特征，而 RK3576 厂商固件本身就带 `/system/etc/{firmware,lib}` ⇒ 真板子被判 ohos，`make_camera()` 又在 OHOS 分支里抢跑 return，**显式传的 `--camera xxx.jpg` 被无声丢弃**，最后以 `camera_open_fail×3` FATAL 收摊（[BOARD_BRINGUP §15.2](../guides/BOARD_BRINGUP.md)） | OH 判据收紧为只认 `/etc/ohos_release`（真 OH 硬件用 `MOIREGUARD_PLATFORM=ohos` 显式指定）；`make_camera()` 改为“显式 device 优先，平台只挑默认值”，同时保留 OH 无 device / OH+设备节点的显式抛错。两个缺陷已进 `tests/smoke.py` §9 钉住 |
 | 14 | **YOLO 转换的后处理陷阱（v2.4）** | ultralytics 原生导出包含 decode+NMS，RKNN 对其中部分算子（TopK/NonMaxSuppression 动态 shape）支持不佳，直接转换大概率失败或落 CPU | 转换前显式去掉后处理只导出主干，decode/NMS 用 numpy 在 CPU 实现（§4.1 A2）。这是 YOLO 上板的第一坑，**先拿官方 rknn_model_zoo demo 的 ONNX 导出方式对齐**，不要自己从 pt trace |
 | 15 | **远景小屏幕召回（v2.4；v2.4.1 后果加重）** | YOLO 输入 640，4K 原图降采样后远处的手机屏可能只剩几十像素，漏检 → 该报 `screen_detected` 的帧落进 SFRNet 全图路径（多花 ~96.6 s 且结果语义错误） | 灰区策略默认 `prefer_screen`（§4.2）；`min_box_ratio` 挂 Q11；实测召回率后决定是否需要高分辨率二次确认（暂不做） |
 | 16 | **"屏幕"类目的边界（v2.4）** | 电子墨水屏、带屏音箱、广告机反光画面等是否算"电子屏幕"，标注口径不清会直接污染训练集 | 审核决议已定：**以"通电发光的显示面板"为准**，墨水屏/关机屏幕不入正类；规范写进 `datasets/README` |
 | 17 | **级联与判定恒真的相互作用（v2.4；v2.4.1 方向反转后性质改变）** | v2.4 时 `no_screen` 短路可能**掩盖** #12 恒真；v2.4.1 反向后 SFRNet **只看无屏帧**，而恒真问题恰在无内容图上最严重——按现配置每张无屏帧都会报 `has_moire`，#12 会以更高频率直接暴露在输出里 | 这既是风险也是观测机会：回归测试必须保留 `cascade.enabled=false` 的 v2.3 对照路径，`tests/test_real_weights.py` 增加级联开关双路对照用例；Q5/Q9 的阈值标定与权重定性因 #12 高频暴露而**更紧迫** |
 | 18 | **双模型常驻内存（v2.4）** | YOLO int8 约 3–7 MB + SFRNet fp16 50.9 MB + 双运行时上下文，4 GB 内存余量充足，但需确认 RKNNLite 双实例并存无冲突 | 首版两个独立 RKNNLite 实例；上板后跑 1 h 常驻观察内存曲线，并入无人值守长期运行测试（风险 #8）。**2026-11-16 实测修正原表述**："NPU_CORE_0_1_2 同配置" 在 RK3576 上不成立——`init_runtime(core_mask=NPU_CORE_0_1_2)` 返 0 但报 `W The RK3576 platform has only two NPU cores. "NPU_CORE_0_1_2" is not supported and will be automatically replaced with "NPU_CORE_0_1"`，即调用能成功但实际落到双核。功能不受影响，但任何按"三核均分"做的耗时推算无效；双实例并存的核分配需在 M-C 实机确认 |
 | 19 | **YOLO 校准集轻但同样不可省（v2.4）** | int8 无校准 → 激活分布统计失真 → conf 漂移 | 100–200 张实拍场景图即可（比 SFRNet 的屏摄标定集容易采集），随摄像头部署第一批采集 |
-| 20 | **模型层包 `__init__` 硬加载 torch，板端产品路径 import 不进 Stage-1（2026-11-16 实测）** | `app/model_layer/__init__.py:17` → `contracts.py:16 import torch`，`app/model_layer/detectors/__init__.py:7` → `sfrnet_detector.py:9 import torch`。而板上按 §1.2/§2 不装 PyTorch，于是 `app.model_layer*` 全线 `ModuleNotFoundError: torch`；级联开启时 `main.py:306` 必报错 → 按 P3 降级禁用级联。**即布局 bug（§18.3）修好后级联仍跑不起来**，且任何想复用 `yolo_postprocess` 常量的顶层 import 都会把调用方一并拖下坑（本轮已在这上面自导自演一次回归） | **已修（用户授权，2026-11-16 上板实测）**：那两个 `__init__.py` 已改 PEP 562 `__getattr__` 惰性导出（板上 md5 `4874014d…`/`9488960b…` 与本机一致），numpy-only 的 `yolo_postprocess`/`yolo_detector` 现可单独导入。板上 `import_probe.py` 三行由 FAIL 转 OK（顶层依赖仅 `['__future__','numpy']`），`gate_real_test.py` 打印 `plain_import_ok=True`、detect mean 106.64 ms、`RESULT=PASS`（[BOARD_BRINGUP §19.4](../guides/BOARD_BRINGUP.md)）。另把 `yolo_detector.py` 的 `normalized_input` 默认值 `True`→`False` 对齐 config（RKNN 归一化已烘进模型）。护栏：`tests/test_yolo_cascade.py` 段 `[7]` 用 `ast` 静态扫 `yolo_runtime.py` 顶层禁 `torch`/`app.model_layer` 导入，42/42 通过 |
+| 20 | **模型层包 `__init__` 硬加载 torch，板端产品路径 import 不进 Stage-1（2026-11-16 实测）** | `app/model_layer/__init__.py:17` → `contracts.py:16 import torch`，`app/model_layer/detectors/__init__.py:7` → `sfrnet.py:9 import torch`。而板上按 §1.2/§2 不装 PyTorch，于是 `app.model_layer*` 全线 `ModuleNotFoundError: torch`；级联开启时 `main.py:306` 必报错 → 按 P3 降级禁用级联。**即布局 bug（§18.3）修好后级联仍跑不起来**，且任何想复用 `decode` 常量的顶层 import 都会把调用方一并拖下坑（本轮已在这上面自导自演一次回归） | **已修（用户授权，2026-11-16 上板实测）**：那两个 `__init__.py` 已改 PEP 562 `__getattr__` 惰性导出（板上 md5 `4874014d…`/`9488960b…` 与本机一致），numpy-only 的 `decode`/`yolo` 现可单独导入。板上 `import_probe.py` 三行由 FAIL 转 OK（顶层依赖仅 `['__future__','numpy']`），`gate_real_test.py` 打印 `plain_import_ok=True`、detect mean 106.64 ms、`RESULT=PASS`（[BOARD_BRINGUP §19.4](../guides/BOARD_BRINGUP.md)）。另把 `yolo.py` 的 `normalized_input` 默认值 `True`→`False` 对齐 config（RKNN 归一化已烘进模型）。护栏：`tests/test_yolo_cascade.py` 段 `[7]` 用 `ast` 静态扫 `yolo.py` 顶层禁 `torch`/`app.model_layer` 导入，42/42 通过 |
 
 ---
 
@@ -861,7 +913,7 @@ SFRNet/
 | ~~Q2~~ | ~~摄像头选型（MIPI CSI 还是 USB）~~ **基本已定**：已随板购入 IMX415（MIPI CSI-2，8MP/4K），走 RKISP + V4L2；剩余待定为实际帧率、曝光/对焦与是否改用板载 AHD 输入 | 已解大半：接口不再需要 USB 分支；分辨率/帧率仍需实测标定后回填超时预算 |
 | Q3 | 检测频率（连续全速 / 定周期 / 变化触发） | 决定 `run_forever` 触发间隔参数。**实测口径已换（§6 风险 #11）：不是“单帧 2.9 s”，而是 2275×1279（32 块）端到端 96.6 s ⇒ 约 0.010 fps；4K（112 块）外推约 340 s**。“连续全速”这个选项在当前产物上根本不成立，选口径前先拿这个数算账 |
 | Q4 | 布尔结果的物理呈现方式（板载 40-pin GPIO / LED / 屏幕 / 串口） | 决定 `IDeviceIO.indicate` 各系统实现 |
-| Q5 | `pixel_ratio` 与 `threshold` 的取值 | **本轮从零内容图坐实到了真实内容图**：除纯灰/纯黑/纯白（logits 均值 +0.80 ~ +2.23、coverage 1.0000）外，**干净屏摄截图也拿到 coverage 0.9991 / 0.9815**，与摩尔纹图 0.9973 无法区分（详见 §6 风险 #12）。`build/_probe_threshold.py` 给出当前唯一知道的可行窗口：thr=0.8 + coverage_threshold 取 0.5～0.6 之间能把这 3 张分开。**但 3 张样本不构成标定**，且需先定“干净负样本到底指什么”（实拍无纹屏 vs 无纹截图）。阈值必须用真实屏摄图标定，标定前须先排除 Q9 |
+| Q5 | `pixel_ratio` 与 `threshold` 的取值 | **本轮从零内容图坐实到了真实内容图**：除纯灰/纯黑/纯白（logits 均值 +0.80 ~ +2.23、coverage 1.0000）外，**干净屏摄截图也拿到 coverage 0.9991 / 0.9815**，与摩尔纹图 0.9973 无法区分（详见 §6 风险 #12）。`build/probe/threshold.py` 给出当前唯一知道的可行窗口：thr=0.8 + coverage_threshold 取 0.5～0.6 之间能把这 3 张分开。**但 3 张样本不构成标定**，且需先定“干净负样本到底指什么”（实拍无纹屏 vs 无纹截图）。阈值必须用真实屏摄图标定，标定前须先排除 Q9 |
 | ~~Q6~~ | ~~镜像的烧录格式~~ **已定**：RK3576 .img 刷机包（RKDevTool / 升级固件） | 已解：`build/` 产出参数化 .img |
 | ~~Q7~~ | ~~SFRNet 自定义算子在 RKNN 上的可转换性~~ **已关闭：链已跑通** | 实测结论（[BOARD_BRINGUP §14](../guides/BOARD_BRINGUP.md)）：mask-sum 静态化 + `onnxslim` 常量折叠后，fp16 产物上板 NPU 推理与 onnxruntime 参照相关系数 1.0000。版本链已定（转换端 2.3.2 + 板上 2.1.0，不替系统库）。⚠ 遗留：int8 量化仍未开（卡在 Q8 校准集）；延迟与判定标定两个新风险（§6 风险 #11 / #12） |
 | Q8 | RKNN 量化校准集的来源（需真实屏摄图 100–200 张） | 仍开放，决定 int8 量化可行性；可从 UHDMD 数据集抽样或摄像头接入后采集（现在仓库里**无一张合规样本**） |
@@ -880,9 +932,9 @@ SFRNet/
 |---|---|---|
 | M-A 数据与训练 | 场景实拍 ≥ 300 张（含 ≥ 30% 负样本，数据来源含 WiFi 回传通道采集）→ 按 #16 口径标注 → ultralytics 微调 YOLOv8n | 开发机验证集 mAP@0.5 ≥ 0.9（单类任务，达不到先查标注口径 #16） |
 | M-B 转换上板 | 无后处理导出 → onnxslim → rknn int8 → 板端 RKNNLite 跑通 | 板端出框，与 ONNX 参照逐框 IoU ≥ 0.95；实测单帧耗时 `[实机]` 回填 §3.3 预算表。**2026-11-16 部分达成**：fp16 链路已上板并通过——`load_rknn`/`init_runtime` 均返 0，conf=0.25（n=1）IoU 0.9995 / conf 相对误差 0.17% / 召回下降 0；生产口径 conf=0.05（n=4）平均 IoU 0.998、最差 0.9949、100% ≥ 0.95，conf 误差 1.20%，召回下降 0；稠密层 conf=0.0（n=600）平均 IoU 0.9788、最差 0.5601、92.67% ≥ 0.95（均 `[实机]`，明细 `build/probes/yolo_board/compare_result.json`）。**未完成项：int8**（校准集需 IMX415 实拍，挂 Q8/Q12）；因此本行验收只覆盖了 fp16，int8 的量化前后逐框比对仍需单独跑。**验证图来自已泄漏的 val 集，以上数字只证明转换链路正确，不得当作模型精度引用**。同日补验：**原图坐标域**（真实工程树 `YoloScreenGate.detect` vs onnxruntime 同类，conf=0.05 下 4/4 全匹配、平均 IoU 0.9980 / worst 0.9949）也已过，见 §3.3 与 BOARD_BRINGUP §19.3；但级联在板上的**启动**仍被风险 #20（模型层 `__init__` 硬 import torch）阻住，本行验收的是推理链而非服务链 |
-| M-C 级联接入 | engine 插入门控（有屏短路出 `screen_detected`，无屏进 SFRNet 全图）；三态 `DetectionResult`/`indicate` 改造；配置/错误恢复/回归用例落地 | `tests/smoke_board_pipeline.py` 全绿；级联开关双路对照（风险 #17）无行为分歧；`--detect a.jpg` 与 `--serve-net` 两形态均验证 |
+| M-C 级联接入 | engine 插入门控（有屏短路出 `screen_detected`，无屏进 SFRNet 全图）；三态 `DetectionResult`/`indicate` 改造；配置/错误恢复/回归用例落地 | `tests/smoke.py` 全绿；级联开关双路对照（风险 #17）无行为分歧；`--detect a.jpg` 与 `--serve-net` 两形态均验证 |
 | M-D 联合标定 | 真实判定集上全链混淆矩阵（Q13/Q5） | 输出最终阈值组，替代 §4.2 的默认占位值；形成交付判据 |
-| M-E 文档收口 | v2.4 落地后同步更新 BOARD_BRINGUP（YOLO 实测节）与 CONTROL_LOGIC（级联判定规则 R-C1 无屏短路、R-C2 灰区 safe 策略） | `build/check_docs.py` 通过 |
+| M-E 文档收口 | v2.4 落地后同步更新 BOARD_BRINGUP（YOLO 实测节）与 CONTROL_LOGIC（级联判定规则 R-C1 无屏短路、R-C2 灰区 safe 策略） | `build/check.py` 通过 |
 
 > 每个阶段的性能数字都要求 `[实机]` 标注后才能写回文档——这是本仓库既有的纪律。
 

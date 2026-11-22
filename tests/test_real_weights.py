@@ -1,6 +1,6 @@
-"""真实权重与网络出口的回归用例（补 smoke_board_pipeline 的空档）。
+"""真实权重与网络出口的回归用例（补 tests/smoke.py 的空档）。
 
-smoke_board_pipeline.py 13 个用例全用 FakeRuntime（返回常数 logits 的假后端），
+smoke.py 13 个用例全用 FakeRuntime（返回常数 logits 的假后端），
 所以"后端接口与真模型对不上"这类缺陷它一条也抓不到——合并时就撞上过一次：
 TorchRuntime 把 registry 返回的 DetectorCore 当 nn.Module 调，`core(t)` 直接
 TypeError，而 13 项依然全绿。本文件把真实权重纳入回归，并核对两条栈的语义一致。
@@ -51,7 +51,7 @@ def main() -> int:
         print(f"[skip] 测试图缺失: {SAMPLE}")
         return 0
 
-    from app.adaptation.runtime.torch_runtime import TorchRuntime
+    from app.adaptation.runtime.torch import TorchRuntime
     from app.logic_layer.decider import Decider
     from app.logic_layer.engine import DetectionEngine, DetectionRequest
     from app.adaptation.camera.base import Frame
@@ -130,9 +130,9 @@ def main() -> int:
     print("[4] HTTP 出口 + 真实推理（localhost 回环）")
     from app import adaptation as ada
     from app.adaptation.base import NetServerOptions, NetworkConfig
-    from app.adaptation.network.http_server import HttpNetServer
+    from app.adaptation.network.http import HttpNetServer
     from app.main import ServiceFacade, build_config
-    from app.logic_layer.inference_service import InferenceService
+    from app.logic_layer.inference import InferenceService
     from app.logic_layer.config import ConfigManager
     from app.model_layer.registry import ModelRegistry
 

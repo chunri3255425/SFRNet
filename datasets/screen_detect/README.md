@@ -53,7 +53,7 @@ datasets/screen_detect/
 
 ```bash
 # 开发机（需 ultralytics，源码库位于 D:\VIEW\YOLO\ultralytics）
-python train/train_yolo_screen.py
+python train/yolo.py
 
 # 验收标准（SDD §8 M-A）：val mAP@0.5 ≥ 0.9（单类任务）
 # 达不到先查标注口径是否被污染（尤其墨水屏/关机屏混入），不要先调超参

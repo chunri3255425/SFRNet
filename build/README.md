@@ -5,12 +5,12 @@
 ## 全流程一览
 
 ```
-SFR_best.pth ──①export_model.py onnx──> sfrnet_static.onnx（默认开 FRM 静态化）
+SFR_best.pth ──① export/model.py onnx──> sfrnet_static.onnx（默认开 FRM 静态化）
                       │
-                      ├─② export_model.py rknn（内部先自动跑 onnxslim 常量折叠）──> sfrnet.rknn（int8，需 rknn-toolkit2 @ x86 Linux）
+                      ├─② export/model.py rknn（内部先自动跑 onnxslim 常量折叠）──> sfrnet.rknn（int8，需 rknn-toolkit2 @ x86 Linux）
                       │        └──一致性比对（误差 >5% → 降位宽/fp16，SDD §6 风险 #7）
                       ▼
-app/ 源码 ──③package_app.py──> build/dist/moireguard-board.tar.gz
+app/ 源码 ──③ package.py──> build/dist/moireguard-board.tar.gz
                               （/opt /etc /usr 分层 stage，含 systemd 单元）
                               │
                               ├──④ 镜像集成：Purple Pi OH2 Linux 根文件系统叠加
@@ -22,19 +22,40 @@ app/ 源码 ──③package_app.py──> build/dist/moireguard-board.tar.gz
 
 ## 目录
 
+分层原则：**目录表达领域，文件名只留一个词**。`export/` 出图，`moire/` 造数据，
+`probe/` 做一次性取证，根目录只剩交付与文档工具。
+
 | 路径 | 内容 |
 |---|---|
-| `export_model.py` | pth→ONNX→RKNN 转换 + 量化一致性比对 |
-| `package_app.py` | 板端运行包打包（免依赖安装，落盘路径见脚本内 `DEST`） |
+| **`export/`** | 模型与算子图导出（全部产出 `models/` 下的 .onnx / .rknn） |
+| `export/model.py` | pth→ONNX→RKNN 转换 + 量化一致性比对 |
+| `export/rule.py` | Stage-2 规则后端的**零参数图**：同一份 `spec()` 同时出 `models/rule_v5.onnx`（开发机 onnxruntime）与 `rule_v5.rknn`（板端 NPU），执行端是 `app/adaptation/runtime/rule.py`；`onnx` / `rknn` / `ops` 三个子命令 |
+| `export/yolo.py` | YOLO 屏检门（Stage-1）导出：裸主干 ONNX + RKNN，后处理仍走 `app/model_layer/detectors/decode.py` |
+| `export/frm.py` | FRM 硬路由静态化（被 `model.py` 调用；OneHot 掩码求和替代 NonZero 分支） |
+| **`moire/`** | 摩尔纹数据工程 |
+| `moire/synth.py` | 摩尔纹仿真器：只模拟“显示栅格 × 相机栅格”错配走样，**不叠正弦条纹**（避免把答案写进题目）；目视对照图落 `.scratch/synth_montage.png` |
+| `moire/pairs.py` | 图内配对样本：同一张图里既有有纹区也有无纹区，标签精确到像素（把拍摄链消成常量） |
+| `moire/label.py` | 像素级标注器：载波频率从图自身频谱读出，判据 = 带通响应 / 局部反差；`--out` 默认 `.scratch/`（过程件不入库） |
+| **`probe/`** | 一次性取证脚本（结论已进 docs，脚本留作复算） |
+| `probe/split.py` / `probe/shapes.py` / `probe/ops.py` | 转换失败取证三件套：前缀二分定位静默 SIGABRT / 符号形状普查 / 单算子隔离 |
+| `probe/x86.py` → `probe/run.py` | 跨设备对照：x86 备输入与 onnxruntime 参照，板端加载 .rknn 跑两种布局 |
+| `probe/compat.py` | 板端运行时版本兼容性（toolkit 2.3.2 产物 × 厂商 2.1.0 runtime） |
+| `probe/threshold.py` | 判定层阈值扫描（prob 分位数 + 可分性），实测结论见 [BOARD_BRINGUP §15.4](../docs/guides/BOARD_BRINGUP.md) |
+| `probe/annotate.py` · `probmap.py` | 逐像素概率标注图 / 干净画法（模型的真实输出粒度） |
+| `probe/scale.py` · `distribution.py` · `summary.py` | 输入尺度对照 / 全量分布扫描 / 扫描结果汇总 |
+| `probe/bands.py` · `symmetry.py` | “描边 vs 带通”判别 / 边缘剖面左右对称检验 |
+| `probe/routing.py` · `semantics.py` | FRM 路由决策记录 / 硬路由 trace 语义验证 |
+| **根目录** | |
+| `check.py` | 文档机械自检：围栏成对 / 表格列数 / §交叉引用落点 / 错字。改完文档必跑 |
+| `package.py` | 板端运行包打包（免依赖安装，落盘路径见脚本内 `DEST`） |
+| `images.py` | 图片素材整理（plan / apply / verify / revert） |
+| `tools/view_relay.py` | 上位机画面查看器（TCP + JPEG 帧播放） |
 | `image_linux/` | Linux 侧集成产物（systemd 服务单元等） |
 | `image_ohos/` | OpenHarmony 侧集成（占位；**2026-11-09 选型已退回 Ubuntu，不再建设**，理由见 [BOARD_BRINGUP §17.5](../docs/guides/BOARD_BRINGUP.md)） |
 | `calib/` | RKNN 量化校准集：**100–200 张真实屏摄图**（可从 UHDMD 抽样；禁用合成图，见 SDD §6 风险 #7） |
-| `_probe_bisect.py` / `_probe_shapes.py` / `_probe_ops.py` | 转换失败取证三件套：前缀二分定位静默 SIGABRT / 符号形状普查 / 单算子隔离 |
-| `_probe_eval_x86.py` → `_probe_board_run.py` | 跨设备对照：x86 备输入与 onnxruntime 参照，板端加载 .rknn 跑两种布局 |
-| `_probe_threshold.py` | 判定层阈值扫描（prob 分位数 + 可分性），实测结论见 [BOARD_BRINGUP §15.4](../docs/guides/BOARD_BRINGUP.md) |
-| `check_docs.py` | 文档机械自检：围栏成对 / 表格列数 / §交叉引用落点 / 错字。改完文档必跑 |
 | `models/` | 转换产物（.onnx / .rknn，不入库，见 .gitignore） |
 | `dist/` | 打包产物（不入库） |
+| `probes/` | 探针落盘目录（日志 / 中间 .npy / 切分 onnx，不入库） |
 
 ## 环境分工（不可装反）
 
@@ -48,16 +69,16 @@ app/ 源码 ──③package_app.py──> build/dist/moireguard-board.tar.gz
 
 ```bash
 # ① pth → onnx（开发机；默认对 FRM 硬路由做导出侧静态化，产物才转得动 RKNN）
-python build/export_model.py onnx --weights assets/weights/SFR_best.pth --out build/models/sfrnet_static.onnx
+python build/export/model.py onnx --weights assets/weights/SFR_best.pth --out build/models/sfrnet_static.onnx
 
 # ② onnx → rknn int8（x86 Linux + rknn-toolkit2）——需 build/calib/ 里有真实屏摄图
-python build/export_model.py rknn --onnx build/models/sfrnet_static.onnx --out build/models/sfrnet.rknn --calib build/calib/
+python build/export/model.py rknn --onnx build/models/sfrnet_static.onnx --out build/models/sfrnet.rknn --calib build/calib/
 
 # ②' fp16 不量化：不需校准集。**已实测跑通的就是这条**（约 1 m 47 s，产物 50.9 MB，板端 NPU 与 onnxruntime 相关系数 1.0000）
-python build/export_model.py rknn --onnx build/models/sfrnet_static.onnx --out build/models/sfrnet_fp16.rknn --no-quant
+python build/export/model.py rknn --onnx build/models/sfrnet_static.onnx --out build/models/sfrnet_fp16.rknn --no-quant
 
 # ③ 打板端运行包
-python build/package_app.py --model build/models/sfrnet.rknn
+python build/package.py --model build/models/sfrnet.rknn
 
 # ④ 烧录/部署（板上已刷官方 Linux 镜像时，SSH 直装即可验收）
 #    用户名/主机名已板端实测：官方 Ubuntu 固件为 `industio`（旧文档里的 firefly 不对）
@@ -105,8 +126,8 @@ ssh root@192.168.31.53 'find /root/app -name __pycache__ -type d -exec rm -rf {}
 |---|---|---|
 | 1 `setuptools>=81` | `No module named 'pkg_resources'` | 钉 `setuptools<81` |
 | 2 `onnx.mapping` | `module 'onnx' has no attribute 'mapping'`；onnx 1.16 删了它，而 **cp312 上 onnx≤1.15 无二进制 wheel**（pip 退回源码构建并失败） | 给转换 venv 挨个补 shim：`site-packages/onnx/mapping.py` + `onnx/__init__.py` 末尾挂 `import onnx.mapping`。仅适用于一次性 venv，**不是产品代码** |
-| 3 依赖声明不全 | `No module named 'app'` → `No module named 'PIL'` | `export_model.py` 已补 `sys.path.insert(仓库根)`；需 `pillow` |
-| 4 **导出产物形状不静态** | `build()` 直接 **SIGABRT（无算子名、无 Python 栈）**；实为 944/1324 张量含符号维度 | 必须常量折叠：`pip install onnxslim`（已实测 0.1.99），`rknn` 子命令已默认自动跑；可 `--no-simplify` 关闭取证。取证工具：`build/_probe_bisect.py`（前缀二分）、`build/_probe_shapes.py`（符号形状普查） |
+| 3 依赖声明不全 | `No module named 'app'` → `No module named 'PIL'` | `export/model.py` 已补 `sys.path.insert(仓库根)`；需 `pillow` |
+| 4 **导出产物形状不静态** | `build()` 直接 **SIGABRT（无算子名、无 Python 栈）**；实为 944/1324 张量含符号维度 | 必须常量折叠：`pip install onnxslim`（已实测 0.1.99），`rknn` 子命令已默认自动跑；可 `--no-simplify` 关闭取证。取证工具：`build/probe/split.py`（前缀二分）、`build/probe/shapes.py`（符号形状普查） |
 
 另：板端推理接口叫 **`RKNNLite.inference()`**，没有 `.forward()`；别把接口名写错当成版本不兼容。
 
@@ -116,11 +137,11 @@ ssh root@192.168.31.53 'find /root/app -name __pycache__ -type d -exec rm -rf {}
 >
 > ⚠ **延迟实测（2026-11-07 产品代码路径，[BOARD_BRINGUP §15](../docs/guides/BOARD_BRINGUP.md)）**：**单块** 512×512 fp16 ≈ 3.0 s；**整帧** 2275×1279（32 块）端到端 **96.6 s**，4K（112 块）外推约 340 s。别把两个数混着说——上一轮我就是这么把延迟低估了一个数量级。
 >
-> ⚠ **判定层未标定**：现配置（threshold 0.5 / coverage_threshold 0.01）下**干净屏摄截图也报有摩尔纹**（coverage 0.98–0.999，与摩尔纹图 0.997 无法区分）。转换链已排除嫌疑（板端与 x86 torch 同图 coverage 差 4×10⁻⁶）；`_probe_threshold.py` 只能给出窗口，标定要等真实负样本。
+> ⚠ **判定层未标定**：现配置（threshold 0.5 / coverage_threshold 0.01）下**干净屏摄截图也报有摩尔纹**（coverage 0.98–0.999，与摩尔纹图 0.997 无法区分）。转换链已排除嫌疑（板端与 x86 torch 同图 coverage 差 4×10⁻⁶）；`probe/threshold.py` 只能给出窗口，标定要等真实负样本。
 >
 > ⚠ **int8 仍未转过**：缺 100–200 张真实屏摄校准集（SDD §6 风险 #7）。校准集现在会先过一遍 `load_calib_images` 落成归一化 `.npy` 再交给 toolkit，保证校准域 == 推理域。
 >
-> 另另：① 里“torch-vs-onnx 自检通过”**不能当成导出正确的证据**——它只验证了 dummy 那一次的路由选择，必须另做多样本路由抽检（`build/_probe_routing.py`）。
+> 另另：① 里“torch-vs-onnx 自检通过”**不能当成导出正确的证据**——它只验证了 dummy 那一次的路由选择，必须另做多样本路由抽检（`build/probe/routing.py`）。
 
 ## 验收口径（SDD §1.2）
 

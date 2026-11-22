@@ -13,7 +13,7 @@ from typing import Optional
 import torch
 
 from app.model_layer.contracts import ModelBundle, IInputAdapter, IOutputAdapter, DetectorCore
-from app.model_layer.builtin_adapter import RGBInputAdapter, SFRNetOutputAdapter
+from app.model_layer.builtin import RGBInputAdapter, SFRNetOutputAdapter
 
 
 class ModelRegistry:
@@ -42,7 +42,7 @@ class ModelRegistry:
         # SFRNet UHD 模型
         # 不做 try/except 兜底: 本模块已硬依赖 torch，导入失败说明环境不完整，
         # 必须让它在启动阶段直接暴露，而不是退化成"注册表为空"的假象。
-        from app.model_layer.detectors.sfrnet_detector import SFRNetDetector
+        from app.model_layer.detectors.sfrnet import SFRNetDetector
         self.register(ModelBundle(
             model_id="sfrnet_uhd",
             display_name="SFRNet (UHD Moiré)",

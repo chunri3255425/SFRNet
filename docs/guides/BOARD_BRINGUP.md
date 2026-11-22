@@ -10,6 +10,36 @@
 
 ---
 
+> 🗂️ **文件名对照（2026-11-22 全库重构）**：本文是实验日志，正文里的文件名记录的是**当时代码的样子**，不做批量改写；按图索骥时查这张表（左 = 文中旧名，右 = 现行文件）。
+>
+> | 文中旧名 | 现行位置 |
+> |---|---|
+> | `yolo_runtime.py` | `app/adaptation/runtime/yolo.py` |
+> | `rknn_runtime.py` | `app/adaptation/runtime/rknn.py` |
+> | `rule_runtime.py` | `app/adaptation/runtime/rule.py` |
+> | `onnx_runtime.py` / `torch_runtime.py` | `app/adaptation/runtime/{onnx,torch}.py` |
+> | `yolo_postprocess.py` | `app/model_layer/detectors/decode.py` |
+> | `yolo_detector.py` | `app/model_layer/detectors/yolo.py` |
+> | `sfrnet_detector.py` | `app/model_layer/detectors/sfrnet.py` |
+> | `builtin_adapter.py` | `app/model_layer/builtin.py` |
+> | `sliding_window.py` | `app/logic_layer/window.py` |
+> | `inference_service.py` / `export_service.py` | `app/logic_layer/{inference,export}.py` |
+> | `http_server.py` | `app/adaptation/network/http.py` |
+> | `wifi_frame_relay.py` | `app/adaptation/relay/wifi.py` |
+> | `linux_io.py` / `file_camera.py` | `app/adaptation/device_io/linux.py` / `camera/file.py` |
+> | `export_model.py` | `build/export/model.py` |
+> | `export_rule.py` | `build/export/rule.py` |
+> | `export_yolo.py` | `build/export/yolo.py` |
+> | `static_frm_export.py` | `build/export/frm.py` |
+> | `_probe_*.py`（16 个） | `build/probe/*.py`（对照见 [build/README](../../build/README.md)） |
+> | `moire_synth.py` / `moire_pairs.py` / `moire_pixel_label.py` | `build/moire/{synth,pairs,label}.py` |
+> | `package_app.py` / `check_docs.py` / `organize_images.py` | `build/{package,check,images}.py` |
+> | `smoke_board_pipeline.py` / `perf_test.py` | `tests/smoke.py` / `tests/perf.py` |
+> | `npu_analysis.py` / `npu_bottleneck_test.py` | `tests/npu/{analysis,bottleneck}.py` |
+> | `train_yolo_screen.py` / `resume_yolo.py` | `train/yolo.py` / `train/resume.py` |
+
+---
+
 ## 1. 出厂身份（⚠️ 刷机即失，本文是唯一留存）
 
 | 项 | 值 | 来源 |
@@ -352,7 +382,7 @@ DDR 类型（只有频率台阶，不断言）、以及任何需要联网的验�
 | **router 无判别力（模型层，新提升为一级风险）** | §13.3：softmax 接近均匀（top1-top2 仅 0.018–0.054），60 个真实切片里 14 个与 dummy 路由不同；静态化只保证“图上能算对”，不保证“选得对” | 需重训 router（辅助监督 / 负载均衡），属训练目标，要用户定 |
 | **单块延迟 3.0 s / 整帧 96.6 s（fp16）** | §14.4 实测的 2.83–3.15 s 是**单块 512×512**，§15.1 产品路径实测整帧 2275×1279（32 块）**96.6 s**；我此前一直把单块当整帧写，低估了一个数量级。与“实时滤摩尔纹”叙事直接冲突 | 要么改口径（单帧离线 / 降分辨率 / 滑窗抽帧），要么先查清“算子是否落在 CPU 上”（折合仅 0.12 TFLOP/s）；先要用户确认可接受的帧率 |
 | **判定层无标定：干净图也报“有摩尔纹”** | §15.4 实测：摩尔纹图 coverage 0.9973，两张干净截图 0.9991 / 0.9815——现配置下布尔恒为 True。已排除预处理口径、tile 尺寸、转换误差三个归因，剩下两个候选：模型精度本身、负样本的定义 | 需用户定“干净”指什么、并用真实屏摄负样本标定双门限（§15.4 已给出当前唯一已知的可行窗口） |
-| ~~平台误判为鸿蒙~~ | **已修（§15.2）**：`/system/etc` 在厂商 Ubuntu 固件里本来就存在，导致相机被装配成未实现的鸿蒙适配器 | 已进 `tests/smoke_board_pipeline.py` §9 钉住；真 OH 硬件到位后用 `MOIREGUARD_PLATFORM=ohos` 显式跑 |
+| ~~平台误判为鸿蒙~~ | **已修（§15.2）**：`/system/etc` 在厂商 Ubuntu 固件里本来就存在，导致相机被装配成未实现的鸿蒙适配器 | 已进 `tests/smoke.py` §9 钉住；真 OH 硬件到位后用 `MOIREGUARD_PLATFORM=ohos` 显式跑 |
 | **真实屏摄校准集缺失** | int8 量化需要 100–200 张真实屏摄图（SDD §6 风险 #7），现在只有 4 张且**无一张是摄像头采的**；本轮靠 fp16 不量化绕开了 | 摄像头接入后才能采集（§9）；接入后注意校准集要落成归一化 .npy（§14.4 预处理口径） |
 | **摄像头物理接线** | §9、§10；软件侧已无卡点 | 只能接实线，接完告诉我插的哪个座 |
 | 法规域是否设为 `CN` | §11.2 的 `country 00` + PASSIVE-SCAN 是 CLM 缺失的真实代价 | 可试 `iw reg set CN` 后回读 `iw reg get`；但 dhd fullmac 是否听 cfg80211 域设置**本次未证**，试了才知道 |
@@ -371,7 +401,7 @@ DDR 类型（只有频率台阶，不断言）、以及任何需要联网的验�
 真实落点是 **A 的转换端（toolkit 2.3.2）+ B 的板端 runtime（保持厂商 2.1.0）**：A 预计要替系统库——不必；B 预计要去 GitHub 取 2.1.0 老 wheel——也不必。
 
 用一个能转成功的最小 Conv 模型（`build/probes/Conv.onnx` → `build/models/probe_conv_fp16.rknn`）推到板上跑，
-**板上 `/usr/lib/librknnrt.so` 一个字未改**（实验脚本：`build/_probe_board.py`）：
+**板上 `/usr/lib/librknnrt.so` 一个字未改**（实验脚本：`build/probe/compat.py`）：
 
 | 实测 | 结果 | 推论 |
 |---|---|---|
@@ -392,7 +422,7 @@ DDR 类型（只有频率台阶，不断言）、以及任何需要联网的验�
 |---|---|---|
 | `setuptools>=81` 删了 `pkg_resources` | `RKNN()` 构造即报 `No module named 'pkg_resources'` | `pip install "setuptools<81"`（toolkit2 没钉上界，这是它的打包问题） |
 | `onnx>=1.16` 删了 `onnx.mapping`，而 **cp312 上 onnx≤1.15 根本没有二进制 wheel** | `module 'onnx' has no attribute 'mapping'`；pip 会退回源码构建并失败 | 只能给这个**一次性 venv** 挨个补 shim：`site-packages/onnx/mapping.py`（提供 `TENSOR_TYPE_TO_NP_TYPE`，8 种 dtype 已逐项校对）+ 在 `onnx/__init__.py` 末尾挂一行 `import onnx.mapping`（rknn 只 `import onnx` 不拿子模块属性）。**产品代码不受影响** |
-| 训练环境依赖没声明全 | `No module named 'app'` → `No module named 'PIL'` | `export_model.py` 补了 `sys.path.insert(仓库根)`；`pillow` 补装。**注意：`build/README.md` 里写的 `python build/export_model.py …` 本来直接报错**，同一类“文档没在代码侧落实”的缺陷第二次出现 |
+| 训练环境依赖没声明全 | `No module named 'app'` → `No module named 'PIL'` | `export_model.py` 补了 `sys.path.insert(仓库根)`；`pillow` 补装。**注意：`build/README.md` 里写的 `python build/export/model.py …` 本来直接报错**，同一类“文档没在代码侧落实”的缺陷第二次出现 |
 
 另外：`rknn-toolkit2` 自身依赖 torch，装 2.3.2 会连带拉进 torch 2.4.0(cu12) / onnxruntime / opencv / numpy 1.26——**不需要另装 CPU torch**。
 
@@ -402,7 +432,7 @@ DDR 类型（只有频率台阶，不断言）、以及任何需要联网的验�
 > （静态化把 NonZero 清零后仍 abort，且崩得更早），真正的炸点在 §14.2 才找到。保留本节原文是为了记“先报明确错的不等于唯一的错”。
 
 第一层——**toolkit 直接拒收**。`sfrnet.onnx`（570 节点，`load_onnx` 返回 0，说明解析层全过）在 `build()` 的
-`fold_constant` 跑到约 30% 时 **SIGABRT（exit 134）且无任何 Python 栈**（无 gdb，faulthandler 也没吐）。用最小程序（`build/_probe_ops.py`）逐算子隔离定位：
+`fold_constant` 跑到约 30% 时 **SIGABRT（exit 134）且无任何 Python 栈**（无 gdb，faulthandler 也没吐）。用最小程序（`build/probe/ops.py`）逐算子隔离定位：
 
 | 探针算子 | 结果 |
 |---|---|
@@ -413,7 +443,7 @@ DDR 类型（只有频率台阶，不断言）、以及任何需要联网的验�
 来头清楚：`upstream/sfr/FRM.py:88-99` 的 `idx = (preds == i).nonzero(as_tuple=True)[0]` + `if len(idx) > 0` + `block[idx]` / `output[idx] = …`。
 ONNX 算子直方图完全对得上：`NonZero=4 / ScatterND=4 / Equal=4 / ArgMax=4 / Range=4`，而 FRM 实例只有 1 个（`fission_module`）、每帧调用 4 次→ **每个 block 只有一条专家分支被 trace 进图**。
 
-第二层——**即使绕过第一层，导出的图也是错的**。这不是推论，是实测（`build/_probe_routing.py`）：
+第二层——**即使绕过第一层，导出的图也是错的**。这不是推论，是实测（`build/probe/routing.py`）：
 
 | 实测 | 结果 |
 |---|---|
@@ -446,7 +476,7 @@ ONNX 算子直方图完全对得上：`NonZero=4 / ScatterND=4 / Equal=4 / ArgMa
 
 ### 14.1 先推翻自己：单算子探针全部“无罪”
 
-把 `build/_probe_ops.py` 的算子探针从 5 个扩到 12 个（重点补上静态化新引入的 `OneHot`、以及 `Pad(reflect)` / `ConstantOfShape` / `Shape→Gather` 等），逐 case 独立子进程跑：
+把 `build/probe/ops.py` 的算子探针从 5 个扩到 12 个（重点补上静态化新引入的 `OneHot`、以及 `Pad(reflect)` / `ConstantOfShape` / `Shape→Gather` 等），逐 case 独立子进程跑：
 
 | 探针 | exit | 结论 |
 |---|---|---|
@@ -458,7 +488,7 @@ ONNX 算子直方图完全对得上：`NonZero=4 / ScatterND=4 / Equal=4 / ArgMa
 
 ⇒ 定性修正：§13.3 把 abort 归到 NonZero 是**不完整的**；NonZero 只是“一个会被明确拒绝的算子”。整图炸点必须换手段定位。
 
-### 14.2 前缀二分才是真正的定位手段（`build/_probe_bisect.py`）
+### 14.2 前缀二分才是真正的定位手段（`build/probe/split.py`）
 
 思路：按拓扑序把 `sfrnet_static.onnx` 截成前 k 个节点，边界张量（被后半图消费、依赖输入、浮点）当输出，逐刀问 toolkit “这前半图能不能 build”。在“可切刀序列”上二分找**第一个 abort 的 k**。
 
@@ -472,7 +502,7 @@ ONNX 算子直方图完全对得上：`NonZero=4 / ScatterND=4 / Equal=4 / ArgMa
 
 一个坑必须记：`subprocess.run` 对 SIGABRT 给的 `returncode` 是 **-6**，不是 shell 的 134。我第一版按 `== 134` 判，得出“全图没复现 abort，前提不成立”的错误结论，差点把整条二分推翻重来。
 
-接着做了全图符号形状普查（`build/_probe_shapes.py`）：**1324 个张量里 944 个含符号维度**，按生产者聚类是 Conv 269 / Relu 215 / Concat 150 / …——一个 Pad 的未推出来的形状把下游整个网络都污染了。所以这不是“FRM 一处小毛病”，而是**导出产物整体没有静态形状**，toolkit 在这种图上会静默 abort（不报算子名、不进 `fold_constant`）。
+接着做了全图符号形状普查（`build/probe/shapes.py`）：**1324 个张量里 944 个含符号维度**，按生产者聚类是 Conv 269 / Relu 215 / Concat 150 / …——一个 Pad 的未推出来的形状把下游整个网络都污染了。所以这不是“FRM 一处小毛病”，而是**导出产物整体没有静态形状**，toolkit 在这种图上会静默 abort（不报算子名、不进 `fold_constant`）。
 
 ### 14.3 缺的一步是常量折叠：`onnxslim`（已焊进流水线）
 
@@ -485,12 +515,12 @@ ONNX 算子直方图完全对得上：`NonZero=4 / ScatterND=4 / Equal=4 / ArgMa
 | `rknn.build(do_quantization=False)` | **1 m 47 s 跑完，exit 0**，`rknn building done` → `sfrnet_sim_fp16.rknn` 50,927,222 B |
 | `E RKNN: Unkown op target: 0` ×5 | 出现但**不致命**：产物能加载、板端结果与参照一致（§14.4），所以这条错误级日志在当前图上属于良性，不要拿它当失败证据 |
 
-已接入 `build/export_model.py`：`rknn` 子命令会先数符号维度，非 0 就自动折叠（`--no-simplify` 留给取证）；`sfrnet_static.onnx → sfrnet_wired_fp16.rknn` 全流程重跑一次，板端数字与手工产物一致。环境多一个包：`.venv-convert/bin/pip install onnxslim`（实测 0.1.99）。
+已接入 `build/export/model.py`：`rknn` 子命令会先数符号维度，非 0 就自动折叠（`--no-simplify` 留给取证）；`sfrnet_static.onnx → sfrnet_wired_fp16.rknn` 全流程重跑一次，板端数字与手工产物一致。环境多一个包：`.venv-convert/bin/pip install onnxslim`（实测 0.1.99）。
 
 ### 14.4 板端真模型首跑，顺带把两个契约打死
 
-工具：`build/_probe_eval_x86.py`（x86 侧准备输入 + onnxruntime 参照，真屏摄图 `build/test_moire.jpg` 缩到 512）
-＋ `build/_probe_board_run.py`（板端加载 .rknn、两种布局各跑一次、当场比参照）。
+工具：`build/probe/x86.py`（x86 侧准备输入 + onnxruntime 参照，真屏摄图 `build/test_moire.jpg` 缩到 512）
+＋ `build/probe/run.py`（板端加载 .rknn、两种布局各跑一次、当场比参照）。
 
 | 实测 | 结果 |
 |---|---|
@@ -502,7 +532,7 @@ ONNX 算子直方图完全对得上：`NonZero=4 / ScatterND=4 / Equal=4 / ArgMa
 
 ⇒ 两个判定：
 1. **SDD §4.1 要点 1 的“RKNN 吃 NHWC”成立**，`RknnRuntime.infer` 的 permute 是对的。我一度因为模型头写着 `framework layout: NCHW` 而怀疑它——那个字段指的是**源框架布局**，不等于运行时输入布局，别再拿它当输入契约证据。
-2. **但输出侧已经是 NCHW**，而 `RknnRuntime.infer` 里 `if out.ndim==4 and out.shape[1]==1: transpose` 恰好命中单通道情形，会把对的 `[1,1,H,W]` 摇成 `[1,H,W,1]`。已改为只在 `shape[1]!=1 and shape[-1]==1` 时才转，`warmup()` 也统一成 NHWC；`build/export_model.py` 的 `verify()` 里同一处逻辑同步修了。
+2. **但输出侧已经是 NCHW**，而 `RknnRuntime.infer` 里 `if out.ndim==4 and out.shape[1]==1: transpose` 恰好命中单通道情形，会把对的 `[1,1,H,W]` 摇成 `[1,H,W,1]`。已改为只在 `shape[1]!=1 and shape[-1]==1` 时才转，`warmup()` 也统一成 NHWC；`build/export/model.py` 的 `verify()` 里同一处逻辑同步修了。
 
 **预处理口径的坑（本轮唯一的“完全错误”产出）**：第一版把 ImageNet 的 `MEAN=[0.485,…] / STD=[0.229,…]` 直接填进 `rknn.config`，板端三种喂法输出量级全错（参照 mean=-9.05，板端拿到 -68 / -13836 / -14076）。原因就写在 config 那行警告里：**rknn 的 mean/std 是直接作用在你喂进去的张量上的，不会帮你 /255**。既然契约 C1 要求归一化在调用侧做完，转换时就应该烘**恒等**预处理（`MEAN_BAKED=[0,0,0] / STD_BAKED=[1,1,1]`）；int8 路径的校准集也随之改成“用同一套预处理落成归一化 .npy 再列进 txt”，否则校准分布与真实输入不是同一个域。那行警告不是噪音，是结论。
 
@@ -547,7 +577,7 @@ $A shell 'cd /root && python3 -m app.main --backend rknn --model /root/sfrnet_wi
 | `make_camera()` 吞掉显式 `device` | OHOS 分支排在函数最前面直接 `return OhosCameraAdapter()`，**根本没看 `device`**；这与它自己的 docstring（“文件/目录走 FileCamera”）相矛盾 | 改为“显式 `device` 为准，平台只挑**默认**源”；同时保留两个 fail-fast：OH 且无 device → `OhosCameraAdapter`（显式抛未实现），OH + `/dev/video*` → 依旧抛（不能假装 V4L2 能用）。修后 `--camera xxx.jpg` → `FileCamera` |
 
 为什么只有产品路径能发现：两个都在 **factory 装配阶段**，探针脚本完全绕过了 `detect_platform` 与 `make_camera`。
-已新增 `tests/smoke_board_pipeline.py` §9（6 个用例，含“开发机不给 device 仍走假源”这类反向护栏），
+已新增 `tests/smoke.py` §9（6 个用例，含“开发机不给 device 仍走假源”这类反向护栏），
 现 **42/42 通过**（用 `/home/plus/GpuTorch/bin/python` 跑的；上一轮因系统 python3 缺 cv2 而卡住）。
 
 ### 15.3 跨后端同图对照：转换链在**整帧**层面也等价
@@ -586,7 +616,7 @@ $A shell 'cd /root && python3 -m app.main --backend rknn --model /root/sfrnet_wi
 | 转换链 / fp16 引入误差 | §15.3 跨后端 coverage 对齐到 4×10⁻⁶；且 x86 fp32 torch 上同样全 True ⇒ **与转换无关** |
 | （顺带）模型输出不是概率图 | `sfrnet.py` 末端是 `nn.Conv2d(16, 1, 1)` 单通道，`train.py:42,148` 用 `BCEWithLogitsLoss` + `sigmoid(logits) > 0.5`，`metrics.py` 同口径 → **确实是摩尔纹区域分割图**，不是残差图；判定语义没走错 |
 
-`build/_probe_threshold.py`（本轮新建，x86 torch、prob 域均匀平均同 `predict.py`）把 prob 完整分布扫了一遍：
+`build/probe/threshold.py`（本轮新建，x86 torch、prob 域均匀平均同 `predict.py`）把 prob 完整分布扫了一遍：
 
 | 图 | prob 分位数 p1/25/50/75/90/99/max | mean | thr=0.7 | thr=0.8 | thr=0.9 |
 |---|---|---|---|---|---|
@@ -816,7 +846,7 @@ dhd_conf_set_country : Country code: CN (CN/38)
 
 ## 18. YOLO 裸主干上板实测，与一条会把级联打碎的输出布局 bug（2026-11-16）
 
-SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/`（`prep_x86.py` 生参照与统一输入→ `board_run.py` 上板推理→ `compare.py` 判定），比对逻辑直接 import `build/export_yolo.py` 的 `_match_boxes`，与 x86 模拟器验收跑同一份判定代码。
+SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/`（`prep_x86.py` 生参照与统一输入→ `board_run.py` 上板推理→ `compare.py` 判定），比对逻辑直接 import `build/export/yolo.py` 的 `_match_boxes`，与 x86 模拟器验收跑同一份判定代码。
 
 ### 18.1 版本事实：2.3.2 是 wrapper 版本，生效的 runtime 是 2.1.0
 
@@ -847,7 +877,7 @@ SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/
 - **后果**：`YoloRuntimeError` 被 gate 捕获后按 P3 降级禁用级联，每张无屏帧多付 SFRNet 全图 ~96.6 s。
 - **与 §14.4 同源**：SFRNet 侧 `rknn_runtime.py` 注释早已写下「实测输出已经是 NCHW，**不要**再反向 permute」，YOLO 侧重新踩了一遍。教训形式上很具体：**不能用「最后一维不是通道数」反推布局，必须用已知的通道数正推**。
 - **修复**：`YoloRuntime._to_nchw()` 改为按 65 通道轴定位——`shape[1]==65` 原样交回（幂等），`shape[3]==65` 才转置，两者都不中则抛 `YoloRuntimeError` 报清晰形状错误。优先判 `dim 1` 是故意的：若将来输入尺寸变化使某空间维也等于 65（如 520 输入→ s8 为 65），仍会正确归为 NCHW。通道锚点常量 `CHANNELS = 4 * REG_MAX + NC = 65` 在 `yolo_runtime.py` 里**自己写了一份**（`REG_MAX = 16` / `NC = 1`）——为什么不能从 `yolo_postprocess` import，见 §19.2，那正是修复过程中我自己踩出来的一次回归。
-- **修复后复核**：把真实的 `app/adaptation/runtime/yolo_runtime.py` + `yolo_postprocess.py` 原样上板（`build/probes/yolo_board/prod_stage/`），走 `YoloRuntime(backend="rknnlite").load/warmup/infer` 完整生产链跑 12 张 → `layout_fail=0`，输出形状全为 NCHW；与 18.2 已验收的 `board_run.py` 结果**逐元素最大绝对差 = 0.000e+00**，与 onnxruntime 参照仍为 @0.05 平均 IoU 0.9980 / worst 0.9949，@0.25 IoU 0.9995。回归：`tests/test_yolo_cascade.py` 34/34 通过。
+- **修复后复核**：把真实的 `app/adaptation/runtime/yolo.py` + `yolo_postprocess.py` 原样上板（`build/probes/yolo_board/prod_stage/`），走 `YoloRuntime(backend="rknnlite").load/warmup/infer` 完整生产链跑 12 张 → `layout_fail=0`，输出形状全为 NCHW；与 18.2 已验收的 `board_run.py` 结果**逐元素最大绝对差 = 0.000e+00**，与 onnxruntime 参照仍为 @0.05 平均 IoU 0.9980 / worst 0.9949，@0.25 IoU 0.9995。回归：`tests/test_yolo_cascade.py` 34/34 通过。
 
 ### 18.4 另一条实测推翻的既有表述：RK3576 只有两个 NPU 核
 
@@ -866,13 +896,13 @@ SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/
 
 ### 19.1 先说我制造的一次回归
 
-第一版修复把 `from app.model_layer.detectors.yolo_postprocess import REG_MAX` 写在模块顶层，
+第一版修复把 `from app.model_layer.detectors.decode import REG_MAX` 写在模块顶层，
 理由是“不重复魔数”。**这句话在板端是错的**：
 
 - `app/model_layer/__init__.py:17` → `contracts.py:16 import torch`
 - `app/model_layer/detectors/__init__.py:7` → `sfrnet_detector.py:9 import torch`
 
-于是 `import app.adaptation.runtime.yolo_runtime` 会先触发这两层包的 `__init__`，在板端直接
+于是 `import app.adaptation.runtime.yolo` 会先触发这两层包的 `__init__`，在板端直接
 `ModuleNotFoundError: No module named 'torch'`——**修之前那版能 import，修完反而连导入都失败**。
 板上 `librknnrt`、模型、NPU 都没问题，是 Python 侧依赖面被我扩大了一格。
 
@@ -885,17 +915,17 @@ SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/
 
 | 模块 | 修 `__init__` 前 | 惰性导出落地后（实测） |
 |---|---|---|
-| `app.adaptation.runtime.yolo_runtime` | **OK**（`CHANNELS=65`），可直接构造 `YoloRuntime("rknnlite")` | OK（不变） |
+| `app.adaptation.runtime.yolo` | **OK**（`CHANNELS=65`），可直接构造 `YoloRuntime("rknnlite")` | OK（不变） |
 | `app.logic_layer.engine` / `app.main` | OK（板端那份已把 `YoloGateError` 挪到 `logic_layer.exceptions`） | OK（不变） |
 | `app.model_layer` | **FAIL** `ModuleNotFoundError: No module named 'torch'` | **OK** |
-| `app.model_layer.detectors.yolo_postprocess` | **FAIL** 同上（模块本体是纯 numpy，被包 `__init__` 连坐） | **OK** |
-| `app.model_layer.detectors.yolo_detector` | **FAIL** 同上 | **OK** |
+| `app.model_layer.detectors.decode` | **FAIL** 同上（模块本体是纯 numpy，被包 `__init__` 连坐） | **OK** |
+| `app.model_layer.detectors.yolo` | **FAIL** 同上 | **OK** |
 
 顶层 import 清单取证：当前版与覆盖前备份**都是** `['__future__', 'numpy']`，
 即零 torch 依赖是这块的本分，我那版破了它，现已还原。
 
 **这条阻塞不是布局 bug 的延伸，而是更地基的问题**：级联开启时 `main.py:306` 会
-`from app.model_layer.detectors.yolo_detector import YoloScreenGate`，修 `__init__` 前在板端**必抛 torch 错**，
+`from app.model_layer.detectors.yolo import YoloScreenGate`，修 `__init__` 前在板端**必抛 torch 错**，
 只能按 P3 降级禁用级联。SDD §1.2/§2 写明板上不装 PyTorch，所以修法只能是让那两个
 `__init__.py` 不再急加载 torch（PEP 562 `__getattr__` 惰性导出）。**该修法已获用户授权并落地**（见 §19.4）。
 落地前取证时我用 `sys.modules` 塞两个空 `ModuleType` 占住包名、再按文件路径加载
@@ -949,7 +979,558 @@ SDD §8 M-B 的板端部分。产物与脚本全部在 `build/probes/yolo_board/
 | `gate_real_test.py` 常规 import | 打印 `常规 import 成功——__init__ 惰性导出已生效，无需桩`、`plain_import_ok=True` |
 | detect 端到端（12 张原图） | mean **106.64 ms** / median 108.96 ms；框中心越出画面帧数 = 0；`RESULT = PASS` |
 
-注：本轮 mean 106.64 ms 与 §19.3 的 102.55 ms 是两次独立实测（同一 gate、同一 12 图），差异在 NPU `ondemand` 档位抖动范围内，不作为“变慢”结论；二者都在 3.3.1 记录的板端延迟带内。
+注：本轮 mean 106.64 ms 与 §19.3 的 102.55 ms 是两次独立实测（同一 gate、同一 12 图），差异 在 NPU `ondemand` 档位抖动范围内，不作为“变慢”结论；二者都在 3.3.1 记录的板端延迟带内。
 
+## 20. 规则图 Stage-2 上板：整帧数值一致、每片 14 ms、并发 2.25×、batch 被静默截断（2026-11-22 第十轮）
 
+本轮把 Stage-2 的规则图（`build/export/rule.py` 烘的 `rule_v5.rknn`，2.89 MB）跑进产品代码路径：
+`DetectionEngine + RuleRuntime + FileCamera`，模型落 `/usr/share/moireguard/models/`（md5 `a58488b1…`，
+与本机逐字节一致）。板端环境不变：rknn-toolkit-lite2 2.3.2 + librknnrt 2.1.0（§13.1 的版本链结论继续成立，
+只打印一行 version-not-match 与 static-shape 提示）。
+
+本轮四个脚本都是**本机过程件（`.scratch/`，不入库）**：`board_rule_bench.py` 单片微基准，
+`board_rule_e2e.py` 引擎端到端，`board_tile_cost.py` 拆开定位每片耗时，`board_rule_conc.py` 并发与 batch。
+
+### 20.1 一张表看完
+
+| 项 | 主机（.onnx / float32） | 板端（.rknn / fp16） |
+|---|---|---|
+| 加载 | 343 ms | 925 ms（bootstrap 全流程；其中 load 450 ms、warmup 29 ms） |
+| 4K 正样本 `moire_0050.jpg`（4096×3072，165 片） | coverage **0.339394** / pmax **0.622459** / tiles 165 / 2256 ms | **同一组数字，逐位一致** / 2352 ms（改前 4018 ms） |
+| 干净图 `clean_0001.png`（1280×1263，16 片） | 0.000000 / 0.377541 / 16 / 393 ms | **同一组数字，逐位一致** / 166 ms |
+| 每片（跨整图均值） | 13.21 ms | 14.29 ms（改前 22.66） |
+| 单片过渡区数值（确定性合成片） | prob 0.691350579 | 0.690430（差 9.2e-4，极性一致、无翻转） |
+| 整图折灰（4K RGB→GRAY） | 2.9 ms | 9.96 ms |
+
+读法：Stage-2 换规则图以后，板端每片从「秒级」（SFRNet fp16 3.02 s/块，§14.4）落到
+**十毫秒级**，同一帧的 coverage / pmax / 片数与主机**逐位相同**。板端比主机略慢 4%
+（2352 vs 2256 ms），差异在折灰（9.96 vs 2.9 ms）与 NPU 输入通道上。
+
+### 20.2 先认两个错
+
+1. **微基准的 9.7 ms 不是整帧的真实值**。`board_rule_bench.py` 反复喂**同一片**，量到的是
+   L2 命中率；引擎跨 12 MB 灰度图取 165 个不同位置的片，**均值 14.29 ms/片**，中位 9.8——
+   差在长尾不在中位。拿 9.7 ms × 112 片外推 4K 一帧会低估约 30%。
+2. **我第一版把 22.7 ms/片 当成了“NPU 慢”**。实际是 CPU 侧 `_layout` 的转置顺序写反了（20.3），
+   NPU 全程只有 46–62% 占用。
+
+### 20.3 根因：先转置再连续化，等于按列读 12 MB 的图
+
+`RuleRuntime._layout` 原来是一行 `np.ascontiguousarray(gray.T[None, None], dtype=np.float32)`。
+`gray` 在引擎整帧路上是 `img[y:y+512, x:x+512]` 的**视图**（行 stride = 4096 字节）。
+先 `.T` 再连续化就变成“每读 2 字节跨一整行”，几乎每次都是 cache miss。
+板端拆解（`.scratch/board_tile_cost.py`，本机过程件）：
+
+| 路 | 只转换 | 转换 + 推理 |
+|---|---|---|
+| 视图 → `_layout`（改前） | **14.31 ms** | 16.65 ms |
+| 连续 → `_layout` | 2.05 ms | 10.40 ms |
+
+修法：在转置**之前**加 `if not gray.flags.c_contiguous: gray = np.ascontiguousarray(gray)`
+（`rule_runtime.py` 已改，注释写明了顺序理由）。整帧 165 片：22.66 → **14.29 ms/片**，
+帧 4018 → **2352 ms**；数值一位没变（20.1 的逐位一致是改后复测的）。
+
+### 20.4 顺带推翻一条自己写的注释
+
+`export_rule.weights()` 的注释说“Aᵀ = B ⇒ 图对输入转置严格不变（内存序不可区分也不必区分）”。
+数学上成立：float64 参考与 onnx 实跑，同一片 `x` 与 `xᵀ` 的 prob 都是 0.000000。
+但**板上不成立**：把同一片按不转置的排布喂进去，prob 从 0.0 变成 0.5。
+说明 toolkit 的 NHWC 输入重排在板上是可区分的，**不能拿“反正不变”去省这一步转置**。
+差异的确切来源（输入重排还是 fp16 转换路径）未查清，标 `[推断]`。
+
+### 20.5 并发：N=2 翻倍，N=3 到两核天花板
+
+`board_rule_conc.py`（板上跑，每档 4 s，片取引擎真实网格跨整图，不是同一片反复喂）：
+
+| 档 | 吞吐 | 等效 ms/片 | worker 内中位 | NPU Core0 | NPU Core1 |
+|---|---|---|---|---|---|
+| N=1 默认 | 71.25 片/s | 14.04 | 9.77 | 45.7% / 峰 78% | 21.5% / 峰 37% |
+| N=2 默认 | 140.75 片/s（**1.98×**） | 7.10 | 10.68 | 59.7% / 峰 90% | 23.8% / 峰 42% |
+| N=3 默认 | 160.25 片/s（**2.25×**） | 6.24 | 12.31 | 61.7% / 峰 93% | 20.7% / 峰 33% |
+| N=2 各绑一核 | 152.00 片/s（2.13×） | 6.58 | 11.67 | 53.9% / 峰 84% | 33.6% / 峰 49% |
+
+- N=1 的 71.25 片/s 与端到端 165 片 / 2.352 s = 70.2 片/s **互相印证**（两条独立路径）。
+- 到 N=2 近乎线性，N=3 只再多 12% → **两核就是天花板**，与 RK3576 只有两个 NPU 核一致。
+- 显式绑核没有收益（1.98× vs 2.13×，差异在抖动内）：Core1 更忙而总吞吐不变，
+  说明默认装配已经会分到两核，问题不在分工。
+- NPU 占用到顶也只有 **62% / 24%**：规则图不是算力受限，是**每片一次的固定开销**
+  （输入重排 + 拷贝 + 同步）在限速。这解释了为什么加进程能提速、加核心不能。
+
+口径：并发提升的是**多帧 / 多路吞吐**。引擎单帧内逐片串行，**单帧延迟仍是 2.35 s**
+（4K 165 片），不会因为开多进程变快。
+
+### 20.6 batch 否证：喂 2 片不报错，静默只算第一片
+
+模型是 static shape（batch=1）。用两片内容相反的输入（网格里 prob 最高的那片 = +1.0，全黑 = +0.0）：
+
+| 输入 | 输出 |
+|---|---|
+| 1 片 最强 | +1.000000 |
+| 1 片 全黑 | +0.000000 |
+| 2 片 `[最强, 全黑]` | shape (1,1,1,1)，值 **+1.000000** |
+| 2 片 `[全黑, 最强]` | shape (1,1,1,1)，值 **+0.000000** |
+
+谁在第一片就算谁，第二片被丢掉，**不报错、输出形状也不变**。这种“成功返回一个悄悄少了
+一半数据的结果”是最危险的失败形态，所以规则图的吞吐只能从**进程并发**拿，不能从 batch 拿。
+
+### 20.7 加大片长能提利用率吗：能，但只值 23%，而天花板是 33%
+
+`board_tile_size.py`（板上跑，同一张 4096×3072 的 moire_0050，stride 一律取片长的一半
+——采样密度不变，只量「摊薄每片固定开销」这一件事；喂法与 `rule_runtime._layout`
+逐字同序：先连续化再转置）：
+
+| 片长 | 片数 | 单片 中位 | 单片 均值 | 全帧 | Core0 占用 |
+|---|---|---|---|---|---|
+| 512 | 165 | 7.79 ms | 12.10 ms | 1997 ms | 67% / 峰 79% |
+| 768 | 70 | 18.09 ms | 24.48 ms | 1714 ms（0.86×） | 59% / 峰 88% |
+| 1024 | 35 | 33.57 ms | 43.89 ms | 1536 ms（**0.77×**） | 75% / 峰 75% |
+
+512 档这里 7.79 ms 比 §20.1 的 9.7 / 14.3 小，因为这条路径绕开了 RuleRuntime 与
+引擎外层，只量 rknnlite 本身；三档在同一口径下可比才是重点。
+（这张表的 512 行是 52 算子版本；换成 §20.9 的 50 算子版后，同口径是 7.54 ms / 1840 ms，
+768 与 1024 未用新版重测。）
+
+按中位算的稳态是 165×7.79 = 1285 ms → 35×33.57 = 1175 ms（**0.91×**），
+与总耗时的 0.77× 差在长尾：均值减中位从 4.3 ms 涨到 10.3 ms/片。
+也就是说片长带来的收益有一部分被“大片的长尾更贵”吃掉了，`[推断]` 与每片新建 1~4 MB
+输入缓冲有关（§20.9 列为待查）。
+
+**这一条推翻了我本轮先给出的推断。** 我当时按「单片 MAC ∝ N³、片数 ∝ 1/N²，
+总计算 ∝ N 线性增长」算出 N=1024 会慢到 1.07×，错在**假设 NPU 效率不随片长变**。
+编译器的周期估算确实是严格 8 倍，但实测只涨 4.3 倍：
+
+| 片长 | 编译周期 | @950 MHz | 实测单片 | 折算 NPU 效率 |
+|---|---|---|---|---|
+| 512 | 531,632 | 0.56 ms | 7.79 ms | 7.2% |
+| 768 | 1,783,200 | 1.88 ms | 18.09 ms | 10.4% |
+| 1024 | 4,219,872 | 4.44 ms | 33.57 ms | 13.4% |
+
+规则图是 batch=1 的 N×N 矩阵乘（GEMV），MAC 阵列本来就喂不满：512 时只用到 7% 的
+理论算力。片长翻倍让矩阵变「胖」，效率跟着涨到 13%，于是单片耗时只涨 4.3× 而不是 8×。
+**「利用率」这个说法在这里是成立的，而且提升明显。**
+
+（表里的「编译周期」取的是 DDR 那一路（§20.1 记的是 DDR 531,632 + NPU 624,411），
+三档同口径。顺带记一笔：§20.9 的融合把 NPU 周期估算从 624,411 降到 531,632（-15%），
+实测中位只快 3.2% —— 说明**周期估算模型对逐元素算子偏乐观**，它把搬运算便宜了。）
+
+但 23% 的收益天花板很低：512 档 Core0 已经 67% 忙，靠摊薄固定开销最多只能省 33%。
+换片长还要付三笔账：
+
+- **重烘图**。52 个算子仍全部落 NPU（0 个 CPU 落点），模型从 2.89 MB 涨到 10.86 MB。
+- **fp16 余量够**，但换片长后要重新核一遍：理论最坏 \|Z\| 过 2^8 后 512/768/1024 分别是
+  183 / 275 / 367，上限 65504，越放越安全（DCT 归一化让 \|Z\| 每轴 ∝ √N，二维后 ∝ N）。
+- **判据要重标**。AMP_RAW 是按 512 标定的**绝对功率门**，片长变了量纲就变；
+  CR1 / CR2 是无量纲比值，理论上不受影响——但这是推断，494 张全量必须复测。
+
+`[推断]` 同密度下 1024 只需把 AMP_RAW 从 64 按 N 线性放大到 128 左右即可，实际要跑一遍确认。
+
+### 20.8 真正便宜的是 stride：0.25× 且代价已量化
+
+同一张图，**片长 512 一个字不动**，只把网格从重叠（stride 256）改成不重叠（512）：
+
+| stride | 片数 | 帧耗时 | 每片 中位 / 均值 | coverage | has_moire | pmax |
+|---|---|---|---|---|---|---|
+| 256 | 165 | 2236 ms | 9.73 / 13.54 ms | 0.339394 | True | 0.622459 |
+| 512 | 48 | 552 ms（**0.25×**） | 9.68 / 11.50 ms | 0.291667 | True | 0.622459 |
+
+判定不翻转，最强片的 prob 一模一样。
+
+全量 494 张（`stride_subgrid_eval.py`，**零推理**：网格点都是 k·stride，尾块贴边位置只取决于
+`full-tile`、与 stride 无关，所以 stride 512 的坐标全部落在 stride 256 的列表里，
+直接取子网格就能还原 stride 512 的全量判定；判据与板上 Decider 同口径）：
+
+| 口径 | 准确率 | 召回 | 误报 |
+|---|---|---|---|
+| stride 256 | 92.51% | 87.7% | 0.0% |
+| stride 512 | 90.89% | 85.0% | 0.0% |
+
+- coverage 相关 0.9929，中位差值 +0.0000。
+- C=0.01 下判定翻转 **12 张 / 494，全部是摩尔纹漏检**（0.0121 / 0.0242 / 0.0303 → 0.0000），
+  **没有一张干净图变成误报**。
+- \|差\| > 0.05 的 97 张也全是摩尔纹：采样变稀后局部细纹只落在少数片上，
+  被跳过的采样点直接归零。
+
+所以两个旋钮的量级差别是：**stride 省 75%，代价 -1.62 pt 准确率（8 张摩尔纹）；
+片长省 23%，代价是重烘图 + 494 张重标定（精度未知）**。两者正交、可以叠加：
+片长 1024 + stride 1024（不重叠）在 4K 上只剩 12 片，`[推断]` 约 0.53 s，
+但采样比 stride 512 更稀，精度要单独验。
+
+### 20.9 算子融合：试了六条，只有一条值 7%
+
+§20.7 量出**单片耗时 ∝ 片长^2.1，不是 N³**；52 个 RKNN 算子里只有 2 个在做真正的
+N×N 矩阵乘，其余 50 个都是 O(N²) 的逐元素/搬运。所以融合的目标很清楚：**把 O(N²)
+算子数砍下来**，不是把乘加变少。六条路全试了，一版一版烘出来上板：
+
+| 改法 | 算子数 | 单片中位 | 全帧 165 片 | 结论 |
+|---|---|---|---|---|
+| v5 基线 | 52 | 7.79 ms | 1982 ms | — |
+| **先平方再乘掩码** | **50** | **7.54 ms** | **1840 ms（0.928×）** | **采纳** |
+| ReduceMax 替两级池化 | 34 | 16.78 ms | 3738 ms（2.26×） | 否证 |
+| Reshape 替 Transpose | 50 | 7.54 ms | 1840 ms | 无收益 |
+| MatMul 替 Conv+Transpose | 34 | 同 ReduceMax 版 | 同 ReduceMax 版 | 否证 |
+| pwu = pwh + pwl | 51 | 7.65 ms | 1753 ms（但极差 473 ms） | 否证 |
+
+测法上先踩了一个坑：第一版脚本按「v5 → v6a → v6c」固定顺序各跑一遍，v6c 得到
+「中位快 2.8%、全帧慢 13.6%」这种自相矛盾的数。改成**四轮轮换次序**（每版在每个
+位置都轮到一次，模型提前 load 好、预热 2 片不记账）才稳：v6c 的逐轮全帧是
+1855 / 1874 / 1825 / 1783，v5 是 1986 / 1979 / 1986 / 1937，**四轮无一重叠**。
+
+**采纳的那一条**是个纯代数恒等：`dct²·m ≡ (dct·m)²`（带掩码是 0/1）。原先写的是
+「先乘掩码再平方」，同一个 `dct` 要平方三遍；改成平方一次、三个掩码各乘一次，
+省掉 2 个 N×N 逐元素算子。逐片对数 369 片（含 34 片落在 Clip 过渡区、非饱和）
+**逐位一致 Δ=0.00e+00**，ONNX 侧、板端 fp16 侧都是 0。
+
+由此反推「单个算子多少钱」是不成立的，我第一版就是这么推的：拿 142 ms ÷ 165 片 ÷ 2 个
+算子 = 0.43 ms/算子，再用 14 个 N² 级算子乘回去，得出 6.0 ms —— 已经接近整片 7.54 ms，
+说明这个乘法律根本不成立（§20.10 的拆分实验直接证伪了它）。正确的解释是：减两个算子
+省下的钱主要不是「少算两次」，而是**少了两张 N×N 中间张量**，少了那两次写回与再读。
+
+**否证的几条，每条都撞在 toolkit 的落点规则上，不是没优化到位：**
+
+1. `GlobalMaxPool` 两级 → `ReduceMax(axes=[1,2,3])`。算子数 52→**34**，看着像大胜，
+   但转换报告直接写 `cpu: ['7 ReduceMax', '21 ReduceMax']` —— **两个都扔到 CPU**。
+   全帧 1982→3738 ms，**慢 2.26×**。N² 个元素要搬出 NPU 再搬回来，比省下的
+   18 个算子贵得多。所以「两级池化 + 换轴」不是没想到 ReduceMax，而是
+   **只有这么干才能落 NPU**。
+2. `Transpose` → `Reshape`。池化前的换轴输入是 (1,N,1,1) / (1,1,1,N)，H=W=1，
+   转置在数学上就是形状改写、零拷贝。但 toolkit 把 Reshape 又归并回 `Transpose`，
+   算子表里 Transpose 还是 5 个 —— 等于白改，还把 ONNX 搞复杂了。
+3. `MatMul` 替「Conv + Transpose」。转换后的算子表和周期与 Conv 版**一模一样**
+   （MatMul 被认成 1×1 Conv），却多出 6.6e-06 的数值差。没收益只有风险。
+4. `pwu = pwh + pwl`。两个子带实测重叠 **0 个元素**（`bun == bhi + blo`），
+   恒等成立，能再省 1 个 N×N 算子。中位确实到 0.982×，但全帧轮间极差跑到
+   **473 ms（27%）**，逐轮 1923 / 1499 / 1972 / 1583 毫无规律。长尾不稳的东西
+   不敢上生产，弃。
+5. `Div → Mul(1/g)` 这条**早就被封死了**（本文件前面记过）：`Div(常数, 数据)`
+   会被折成 `Reciprocal` 并落 CPU。
+
+所以算子数这条路基本到顶了：50 个里 2 个是真的 N³ 矩阵乘、5 个 Transpose（3 个在
+(1,1,1,N) 上几乎免费）、16 个 MaxPool、10 个 Conv（8 个是平均池化折的）、9 个 Mul
+（4 个 N²、5 个标量）、2 个 Div（N²）、其余标量。**剩下能砍的只有 2 个 Div 和 1 个
+Expand，都不是白送的**。
+
+**端到端看不见这 7%。** 同一张 4K 图跑引擎全链（取帧→折灰→网格→判定）：
+
+| 模型 | 帧墙钟 3 次 | coverage | 网格推理 |
+|---|---|---|---|
+| 旧（52 算子） | 2400 / 2369 / 2104 ms，med 2369 | 0.339394 | 12.44 ms/片 |
+| 新（50 算子） | 2357 / 2306 / 1964 ms，med 2306 | 0.339394 | 12.59 ms/片 |
+
+2.6% 的差别落在 18% 的帧间抖动里，**判据一致（coverage 与开发机同值 0.339394）**。
+但这里露出一条比算子融合大得多的线索：**微基准 7.54 ms/片，端到端 12.59 ms/片，
+差 5.05 ms/片 × 165 = 833 ms**，占帧时间的 36%。这 5 ms 不在 NPU 上，在
+`RuleRuntime._layout` 的「先连续化（256 KB 拷贝）→ 转置 → float32（1 MB 写出）」
+那一步。**下一个该压的是它，不是算子数**（§20.12 已把这段换成 `cv2.transpose` 并拉开三路，
+单片 10.66 → 3.69 ms）。
+
+### 20.10 把单片 7.54 ms 拆开：算法只占 30%
+
+「两个 512×512 的矩阵乘太重了吧」—— 这个直觉在编译器的账本里是成立的：RKNN 的逐算子
+周期估算给出两个 `Conv:y1/y3` 各 `210699 / 262144 / 262144`（ddr / npu / 第三列），
+其余 48 个算子合计只有约 11,000 cycles，也就是**两个 Conv 占 NPU 周期的 97.9%
+（524288 / 535359）、占 DDR 的 80.8%（421398 / 521449）** `[实测：toolkit 转换日志]`。
+
+**但那本账整体是错的**：同一份估算给整图 0.55 ms，板端实测 7.54 ms，差 13.7 倍。
+拿它算占比可以，拿它算金额不行。要知道两个 N³ 到底值多少钱，只能上板差分。
+
+第一版差分是失败的，但失败得很有价值。做四张剖分图（同一套最简封装，只留不同部件）：
+
+| 剖分图 | 内容 | 板上中位 |
+|---|---|---|
+| `tp2` | 只有两级池化链 | **5.333 ms** |
+| `mul1` | 1 个 N×N Mul + 池化链 | 4.786 ms |
+| `conv1` | 1 个 N³ Conv + 池化链 | 4.994 ms |
+| `conv2` | 2 个 Conv + 2 个 Transpose + 池化链 | 6.207 ms |
+
+「只有池化链」居然不是最快，解方程直接算出**负的 Conv 成本（−0.339 ms）和负的 Mul 成本
+（−0.547 ms）**。原因不是脚本错，是**底座远大于单件信号**：这几张图都吃 1 MB 输入，
+而下面量出来的底座就有 5.3 ms。
+
+于是把图削到不能再削 —— `X(N×N) → GlobalMaxPool → Transpose → GlobalMaxPool → 标量`，
+只改输入边长：
+
+| 边长 N | 输入 MB | 中位 ms | 最小 ms |
+|---|---|---|---|
+| 128 | 0.06 | 2.041 | — |
+| 256 | 0.25 | 2.676 | — |
+| 512 | 1.00 | 5.304 | — |
+
+线性拟合 **t ≈ 1.82 ms 固定 + 13.3 ns × 输入元素数**（N=256 预测 2.70 / 实测 2.676，
+对得上）。三个点都是 3–4 级池化链（N=128/256 是 3 级、512 是 4 级），耗时却几乎只跟
+元素数走，说明这笔钱**跟图里有什么算子无关**。
+
+**由此得到本轮唯一可信的拆分** `[实测]`：
+
+```
+生产图单片  7.54 ms
+最小图      5.30 ms   = 1.82 ms 提交固定 + 3.48 ms（13.3 ns × 262144）
+差值        2.24 ms   = 图里全部真实计算（2 个 N³ + 12 个 N² 级算子）的上界
+```
+
+所以：**算法只占 30%，两个 512³ 的真实成本 ≤ 2.24 ms/片（≤ 370 ms/帧）**，而不是
+估算说的 98%（≈ 7.4 ms/片）。把两个 N³ 全砍掉（比如只算需要的频带 K<N），天花板就是
+这 30%；减 N² 级算子（§20.9 已做，52→50）天花板也在同一个 2.24 ms 里。
+
+那 5.3 ms 能不能省？先试最省事的一条：dtype 与喂法。图里输入是 0–255 的整数，fp16 能
+精确表示，换成 fp16 输入**数值无损**；而 `RKNNLite.inference` 默认 `data_format='nhwc'`，
+本图张量却是 NCHW 语义，可能白倒一遍。四组合 3 轮 × 30 次：
+
+| 喂法 | P10 | 中位 ms |
+|---|---|---|
+| f32 / nchw | 4.73 | 5.588 |
+| **f32 / nhwc（现用）** | **4.75** | **5.383** |
+| f16 / nchw | 4.98 | 5.765 |
+| f16 / nhwc | 4.93 | 5.825 |
+
+**没有一种更快。** 中途有一版只比 f32/f16 两档（各 40 次）得出「f16 省 1.61 ms」，
+但它的最小值 f16(5.800) 反而比 f32(5.263) 慢 —— 自相矛盾，扩成四组合复测后确认那是
+中位被长尾污染的假象。结论：**13.3 ns/元素与图内容、dtype、data_format 都无关**。
+
+那它是什么？`[推断]` 不是 NPU 在算，是 rknnlite 对每个输入元素的处理成本（75 M 元素/s、
+约 300 MB/s，比 NPU 读数的量级低两个数量级，更像 CPU 侧在重排/拷贝）。所以真正的大杠杆
+只剩两根，且都不在「算法」里：
+
+1. **减少送进 NPU 的元素总数**。总元素 = 片数 × N²，只取决于覆盖面积与重叠率：165 片 ×
+   262144 = 43.25 M，而 4K 图只有 12.58 M 像素 —— **重叠 3.44 倍**。这就是 §20.8 里
+   stride 512（48 片 × 262144 = 12.58 M）能省 75% 的本质，代价 1.62 pt 也已量化。
+2. **绕开 rknnlite 的每元素路径**（换 C API / 零拷贝输入）。若 13.3 ns 能降到 1 ns，单片
+   7.54 → 2.3 ms 量级，全帧 1982 → 约 500 ms `[推断，未验证]`。
+
+### 20.11 还没闭环的
+
+- **13.3 ns/元素 落在哪一层**：已定位，且结论是否证的 —— 它根本不是输入拷贝，而是
+  `rknn_run` 自身的固定开销（§20.13，零拷贝实测只省 1 ms/9.85）。
+- **模型 2.3.2 / 运行时 2.1.0 跨版本**：已闭环且**否证**（§20.14）。把板端 librknnrt 换成
+  2.3.2 后跨版本警告消失、数值逐位一致，但单片 9.58→9.75 ms、3 路帧 670→664 ms，全在噪声内。
+  `pass_through=1` 在 2.3.2 下依然不读调用者的缓冲（§20.14 第四节）。
+- **单帧 640 ms 离实时还远**（§20.12 已把 2.35 s 压到 640 ms）。换运行时已被 §20.14 否证、
+  输入路径已被 §20.13 否证、帧内多路已用尽（4 路 250 片/s，与 3 路同）。再往下只剩两条：
+  **少跑几次 run**（stride 512，-75%，代价 -1.62 pt）或**改大片长**（重烘图 + 重标定）。
+- **长尾没定位**：1 路下中位 10.7 / 均值 12.5 ms/片。原先怀疑「每片新建 1 MB 输入缓冲 →
+  缺页」，§20.12 的缓冲复用实验直接**否证**了它（1.91 → 1.89 ms/片，噪声内）。
+  剩下的可疑项是 12 MB 灰度图的跨页访问与 NPU 驱动的每片提交，未再细查。
+- **端到端只测了 2 张图**（1 正 1 负）。494 张全覆盖仍是开发机口径（§1.1 的 92.71%），
+  板上没重跑全量——数值逐位一致说明判据没变，但“板上全量指标”这件事本身没测。
+- **Core1 长期 20% 出头**。绑核实验证明不是 Python 侧分工问题，`[推断]` 是 librknnrt
+  对单实例的调度策略，未查文档 / 源码。三路并行后核心占用未重测。
+- **片长 1024 的精度未验**。§20.7 只测了耗时与算子落点，判据仍是 512 标定的；
+  真要走这条路，得重标 AMP_RAW 并重跑 494 张。
+- **stride 384 中间档没测**。它不在 stride 256 网格上（384 不是 256 的倍数），
+  子网格技巧用不上，要真跑推理。
+- **`config.inference.stride` 是死参数**。`DetectionEngine._infer_padded` 里 stride
+  硬编码成 `tile // 2`，配置项根本没被读；要落地 §20.8 得先把这个口子接上。
+
+### 20.12 片级并行：2.75×，算法与数值都不动（2026-11-22 第十一轮）
+
+§20.10 已经把单片拆开了：7.54 ms 里只有 2.24 ms 是真计算，剩下的是“每片一次”的固定
+开销与搬运。而引擎是两层 `for` 串行、一次只喂一片，相当于让 NPU 等 CPU 备料。
+片与片之间零依赖（一片一个标量结论），所以这里有一条不用动算法、不用重标定、
+不改变任何数值的路。
+
+**先验证前提，再写代码。** §20.5 那个 1.98× 是 **multiprocessing.Process** 测的；
+同一进程里多开 RKNNLite 再配线程能不能重叠，取决于 C 扩展有没有在 inference 里放 GIL。
+`board_lanes.py`（同进程、160 片、全部取自真实网格）测了两件事：
+
+| 路数 | 片/s | 等效 ms/片 | 相对 1 路 |
+|---|---|---|---|
+| 1 | 90–93 | 10.7–11.1 | — |
+| 2 | 181–190 | 5.3–5.5 | 1.97× |
+| 3 | 250–259 | 3.9–4.1 | **2.75×** |
+| 4 | 232–278 | 3.6–4.3 | 与 3 同（噪声内） |
+
+线程能重叠，而且 3 路就顶到两核天花板：**两核 ÷ 每片 7.5 ms NPU 时间 = 267 片/s**，
+实测 250–259。也就是说 1 路时每片 11 ms 里有约 3.5 ms 的 host 工作在空等。
+同一批 160 片作业在不同路数下 Σprob 相同，说明并行不改数值。
+
+**同一支探针顺手否证了三件事**（每片都从 12 MB 灰度图上取视图，不是同一片反复喂）：
+
+| layout 写法 | ms/片 |
+|---|---|
+| 旧写法：`ascontiguousarray` 落地 + `ascontiguousarray` 转置转 f32 | 1.91 |
+| 只复用缓冲（`np.copyto` 两次，b17 的假设） | 1.89 |
+| **落地 + `cv2.transpose`(uint8) + `copyto` 转 f32** | **1.01** |
+| 不落地，直接对 strided 视图 `cv2.transpose` | 6.38 |
+
+1. **缓冲复用没用**（1.91 → 1.89，噪声内）。b17 猜的“每片新建 1 MB 数组→缺页”不成立；
+   省下来的是转置算法，不是分配。
+2. **`cv2.transpose` 比 numpy 快一倍**（同为 512×512 uint8），逐值一致。
+3. **“先落地”那 256 KB 拷贝不能省**：cv2 对非连续输入走通用路径，直接转 6.38 ms/片，
+   比落地再转贵 6 倍。这与 §20.9 那条旧注释同一个结论，只是换了个实现。
+
+**落到代码里三处**：
+
+- `IRuntimeAdapter.infer_tiles(patches, guard)` 带默认实现（逐片串行，与老的 for 循环等价），
+  所以 SFRNet 后端一行不改。`guard` 是每片前调一次的回调 —— 停机闸仍在片级，
+  不会因为一整帧一次性交出去就等到帧尾才能停。
+- `RuleRuntime(tile_workers=)`：多路 RKNNLite + 一路一线程，**中转缓冲一路一块**（转置与
+  类型转换都是原地写，共用会让 A 的片被 B 覆盖——这种错不崩，只让 prob 偶发乱跳）。
+  附加路建不起来就降级到已建成的路数，不拦启动。`.onnx` 恒 1 路（ort 自己多线程，
+  而且开发机这条路是验结论用的，要逐位可复现）。
+- 引擎片网格路：备料（视图/补边/换通道序）与推理分开，整批交后端。
+
+**板上验收**（`board_rule_par.py`，4K 165 片，正样本 moire_0050）：
+
+| 路数 | 帧墙钟 med | ms/片 | 相对 1 路 | coverage |
+|---|---|---|---|---|
+| 1 | 1756.3 ms | 10.66 | — | 0.339394 |
+| 2 | 892.8 ms | 5.13 | 1.97× | 0.339394 |
+| 3 | **639.6 ms** | **3.69** | **2.75×** | 0.339394 |
+
+- **逐片 logits `max|Δ| = 0.000e+00`，165 片里不一致 0 片**（1 路 vs 3 路，同图同网格）。
+- coverage 三档同一值，也与开发机同值。
+- `board_layout_eq.py` 又单独比了新旧两套 layout：165 片输入数组 `max|Δ| = 0`，过 NPU 后
+  prob 不同的 0 片；负样本 1280×1263 → 16 片，`cov=0.000000`、`no_moire`。
+
+**测环境的一句实话**：本轮所有板上数字都是在停掉常驻服务（`app.main --serve-net`，
+147% CPU、NPU 58%+31%）之后测的。带着它跑，同一配置会差 1.3 倍左右 —— §20.9 的
+“端到端 12.59 ms/片”是带着它测的，与今天的 1 路 10.66 ms/片不能直接相减。
+测完已按原命令行恢复。
+
+**可退**：`runtime.tile_workers: 1` 就回到老行为（一条线程、串行），`0`=自动（rknn 3 路）。
+本轮没有动算法、没有重烘图、没有重标定。
+
+### 20.13 零拷贝否证：13.3 ns/元素 不是输入拷贝，是 `rknn_run` 自己的开销（2026-11-22 第十二轮）
+
+§20.12 之后整帧 640 ms。剩下的账目全部指向一条推测：单片 10.6 ms 里约 3.5 ms 花在
+“输入被逐元素处理”上（§20.10 的三点线性拟合：1.82 ms 固定 + 13.3 ns × 元素数）。
+按代价排序的清单里，唯一不损精度的一条就是**绕开 rknnlite 的每元素路径**（换 C API /
+零拷贝）。本轮只做这一条，**结论是否证**。
+
+**第一步先把“在算还是在等”分开。** 单片推理分别记墙钟与 `process_time`：
+
+| 环节 | 墙钟 | CPU | CPU/墙钟 |
+|---|---|---|---|
+| rknnlite 推理（输入已备好） | 9.85 ms | 6.40 ms | **0.65** |
+| `_layout`（落地+转置+转 f32） | 1.02 ms | 1.01 ms | 0.99 |
+
+不是 DMA 空等，绝大部分是 CPU 在算。再看声明属性，发现一件之前没人注意的事：
+
+```
+输入(声明): dims=[1,1,512,512] n_elems=262144 size=524288 fmt=NHWC type=float16 w_stride=512
+```
+
+**模型输入本体就是 float16**（524288 = 512²×2），我们一直喂 float32（1 MB）。
+看起来“运行时每片逐元素 f32→f16”就是那 13.3 ns —— 但这只是看起来。
+三个入口逐个试穿（同一片，正确值 `+0.209595`，取自 4096×3072 的 moire_0050）：
+
+| 入口 | 数值 | 墙钟 | 判定 |
+|---|---|---|---|
+| `pass_through=1`（f16，7 个 dtype×fmt 组合） | **+0.000000** | 5.3–11.1 | **否证**：全错；f32 喂还段错误 |
+| fp16 输入，`pass_through=0` | +0.209595 正确 | 11.04 | 更慢（f32 是 9.85） |
+| `create_mem` + `set_io_mem`（真零拷贝） | **+0.209595 正确** | 8.83–10.19 | 与拷贝版持平 |
+
+最后一行是关键：`set_io_mem` 把一块共享内存直接交给 NPU，**输入一个字节都不拷**，
+数值逐位正确，但墙钟几乎不动。再切一刀（同一份 io_mem 缓冲）：
+
+| 环节 | 墙钟 | CPU |
+|---|---|---|
+| `rknn_run` 单独 | 8.94 ms | 5.54 ms |
+| `rknn_run` + `outputs_get` | 10.19 ms | 6.75 ms |
+| `outputs_get` 单独 | **0.04 ms** | 0.04 ms |
+| `rknn_run` 连做两次 | 20.09 ms | 13.26 ms |
+
+取输出本身是免费的（单独 0.04 ms），但它紧跟在 run 后面时要等 NPU 算完（+1.25 ms）。
+所以一次完整的 run = **8.9 ms 提交 + 1.3 ms 等算完 ≈ 10.2 ms，其中 5.5–6.7 ms 是 CPU**。
+把输入拷贝彻底去掉之后，CPU 只从 6.40 降到 5.54 ms，墙钟落在同一噪声带里（9.85 vs 10.19）
+—— **输入路径不是瓶颈**，那 5.5 ms 的 CPU 在 `rknn_run` 内部（逐算子铺命令）。
+
+⇒ **定性修正**：`1.82 ms 固定 + 13.3 ns/元素` 是三个小图三点的线性拟合，不是机制。
+真实结构是“**每次 run 一个 8–10 ms 的大常数**，与图大小/算子数有关、与输入字节数基本无关”。
+所以 §20.10 那句“13.3 ns 是 rknnlite 对每个输入元素的处理成本”是错的，本轮订正。
+
+**顺带记下五个坑**（每个都花了时间，且都会静默给出错结果）：
+
+1. `rknn_context` 是 **uint64_t**。按 4 字节声明 → `rknn_init` 覆写栈 → 后续 `rknn_query` 段错误。
+2. `RKNN_QUERY_NATIVE_INPUT_ATTR`（cmd=6）在 2.1.0 上返回的**不是张量属性**，会写坏调用者
+   的栈。用 `RKNN_QUERY_INPUT_ATTR`（声明属性）就够了 —— 它本来就是 f16/NHWC/512²/524288。
+3. `rknn_set_core_mask(ctx, 7)` 在两核板上报 `unavailable core mask` 并**静默继续**（单核跑），
+   必须用 `3`（CORE_0_1）。第一版零拷贝数据就是被这个坑单核化的。
+4. `RKNNLite.inference` 要求 **4 维**输入；2 维会抛 `need 4dims input`，被内部 `try/except`
+   吞掉后返回 `None` —— 拿 `None` 去计时会得到 0.6 ms 的假快。
+5. `pass_through=1` 在本板上**根本不读调用者的缓冲**：三份内容差异极大的输入给出同一个值
+   （§20.14 第四节）。这不是版本问题 —— 2.1.0 与 2.3.2 表现完全相同。
+
+**当时还没试的一条**：把板端 `librknnrt.so` 从 2.1.0 升到 2.3.2（与 toolkit/模型对齐）。
+**§20.14 已试完：能加载、驱动兼容、数值不变，但速度也不变 —— 否证。**
+剩下的一条是 §20.8 的 stride 512（少 75% 的 run），代价 -1.62 pt。
+
+本轮七支探针都是**本机过程件**（`.scratch/`，不入库）：`board_zero.py`（CPU vs 墙钟 +
+声明属性）、`board_f16prep.py`（u8→f16 备料快路，`np.take(LUT)` 1.19 ms 最快）、
+`board_pt.py` / `board_pt2.py` / `board_pt3.py`（pass_through 七组合，逐组合隔离子进程）、
+`board_iomem.py` / `board_iomem2.py`（真零拷贝与它的逐段计时）。
+**生产代码本轮一行未改** —— 没有收益的改动不进仓库。
+
+### 20.14 运行时对齐到 2.3.2：能加载、数值不变、速度也不变（2026-11-22 第十三轮）
+
+§20.13 留下两条路，本轮把第一条（换运行时）走完，**结论仍是零收益**；顺手给“pt1 假快”
+补了决定性证据，把 §20.13 第 5 个坑从“极可能”变成“确定”。
+
+**一、怎么拿到 2.3.2 的库，怎么不动系统文件试它**
+
+- `raw.githubusercontent.com` 在本机不通，`github.com` 通。改走 jsdelivr 代理：
+  `https://cdn.jsdelivr.net/gh/airockchip/rknn-toolkit2@v2.3.2/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so`
+  → 7 726 232 字节，md5 `a37ee1d5d664c79836bf6e35b7ef6289`，
+  `librknnrt version: 2.3.2 (429f97ae6b@2025-04-09)`，SONAME `librknnrt.so`。
+- 板上原库：7 155 496 字节，md5 `347383938f2cf51cd10a3c5b9aa2256f`，`2.1.0 (967d001cc8@2024-08-07)`。
+- **两个“看起来能无损切换”的环境变量都无效**：
+  - `LIBRKNNRT_PATH`：`rknn_runtime.cpython-310-aarch64-linux-gnu.so` 里确实有这个字符串，
+    但设了不生效（日志仍报 2.1.0，`/proc/self/maps` 仍只有 `/usr/lib/librknnrt.so`）。
+    它是报错提示用的，不是加载开关。
+  - `LD_PRELOAD=/root/rknn232/librknnrt.so`：maps 里**两份都出现**，但 rknnlite 仍从
+    `/usr/lib` 那份取符号（日志 2.1.0）—— 它按**绝对路径** dlopen，不复用预加载的同名库。
+- **真正无损的办法是 `mount --bind`**：只动挂载表，系统文件一个字节不改，`umount` 即恢复。
+  挂上后 `RKNN Runtime Information: librknnrt version: 2.3.2`，
+  `RKNN Model version: 2.3.2 not match with rknn runtime version` 那条警告消失。
+
+**二、驱动兼容，数值逐位不变**
+
+板端驱动 `0.9.8`（2024）配 2.3.2 运行时**没有任何驱动版本错**，`rknn_init` 正常。
+居中片 `+0.209595` 与 2.1.0 一致；165 片网格 `max|Δlogit| = 0`、coverage 0.339394 相同。
+
+**三、速度：全在噪声内，方向还略差**
+
+单片（居中片，常驻服务已停，各 3 轮，单位 ms）：
+
+| 运行时 | 三轮墙钟 | 墙钟中位 | CPU 中位 |
+|---|---|---|---|
+| 2.1.0 | 9.58 / 9.04 / 9.89 | **9.58** | **6.45** |
+| 2.3.2 | 14.59（首轮冷）/ 9.70 / 9.75 | **9.75** | **6.73** |
+
+帧级（4K 165 片，同图同网格，同一次会话）：
+
+| 路数 | 2.1.0 帧墙钟 | 2.3.2 帧墙钟 | 差 |
+|---|---|---|---|
+| 1 | 1724.9 ms | 1706.9 ms | -1.0% |
+| 2 | 885.3 ms | 886.5 ms | +0.1% |
+| 3 | **670.3 ms** | **664.4 ms** | -0.9% |
+
+三档都在 ±1%，单片 CPU 反而高 4%。**换运行时压不掉 `rknn_run` 里那 5.5 ms CPU** ——
+那笔开销跟图有关，不跟库版本有关。
+
+**四、`pass_through=1` 的“快”是假的（决定性证据）**
+
+§20.13 只说了“数值错、所以假快”。本轮补一个判据：同一进程连喂三份内容差异极大的输入。
+
+| 输入 | `pt=0` | `pt=1` |
+|---|---|---|
+| 全 0 | +0.000000 | +0.000000 |
+| 全 255 | +0.000000 | +0.000000 |
+| 居中片 | **+0.209595** | +0.000000 |
+
+`pt=0` 三份给出**不同值**（输入确实被读到），`pt=1` 三份给出**同一个值** ⇒ `pt=1` 根本没读
+调用者的缓冲，NPU 看到的是一块没写过的内存。它那 4.1 ms（vs pt0 8.2 ms）不是省了转换，
+是**没干活**。这条从“数值错”升级为“输入未被读取”，且与版本无关（2.1.0 / 2.3.2 同样表现）。
+
+**五、结论与处置**
+
+- **不换**。无收益 + 板级系统改动有风险 + 现状已验证。`/usr/lib/librknnrt.so` 仍是原版
+  2.1.0（md5 `3473…256f`），板上无残留 mount。
+- 2.3.2 的库留在板上 `/root/rknn232/librknnrt.so`（不进系统路径），要再验时
+  `onboard_rt232.sh` 一条命令就能挂上；本机留一份 `.scratch/rknnrt232.so`。
+- b27 结案：**否证**。剩下的仍是 §20.8 的 stride 512（少 75% 的 run，代价 -1.62 pt），
+  那是精度与速度的交换，不是白捡。
+
+本轮新探针：`board_rt_ab.py`（单片 A/B）、`board_pt4.py`（三份输入判据）、
+`onboard_ab.sh` / `onboard_rt232.sh`（bind mount + 自动 umount）。
+**生产代码本轮一行未改。**
 

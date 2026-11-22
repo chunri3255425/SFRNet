@@ -26,11 +26,11 @@
 
 清单里的 193 张 `普通屏幕截图NNNN.png` 已不在本机（D:、E: 搜不到），所以下文“编号方案”表是
 **2026-11-08 那次历史记录**，与上面新编号段不是同一回事。
-`build/organize_images.py` 靠 `resolve()` 把历史 `old_dir`（`测试图片/…`）也映射到 `data/raw/…`。
+`build/images.py` 靠 `resolve()` 把历史 `old_dir`（`测试图片/…`）也映射到 `data/raw/…`。
 当前 `verify` 报「897 行 | 缺失 897 | md5 不符 0 | 残留 897」——因为 `plan` 只登记名字，
 **还没跑 `apply` 真改名**，磁盘上仍是原件名。要不要 apply 见文末。
 
-## 编号方案（`build/organize_images.py`，只改名不改字节）
+## 编号方案（`build/images.py`，只改名不改字节）
 
 下表为 **2026-11-08 历史执行**（对应 `test_images_manifest_20261108.csv`，那批数据已不在本机）：
 
@@ -44,10 +44,10 @@
 **文件名前缀即真值标签**，脚本 `glob("moire_*")` / `glob("clean_*")` 就能拿到带标签的集合，不依赖清单。
 
 ```bash
-/home/plus/GpuTorch/bin/python build/organize_images.py plan     # 生成清单，不动文件
-/home/plus/GpuTorch/bin/python build/organize_images.py apply    # 按清单改名
-/home/plus/GpuTorch/bin/python build/organize_images.py verify   # 逐张重算 md5 比对清单
-/home/plus/GpuTorch/bin/python build/organize_images.py revert   # 按清单改回原状
+/home/plus/GpuTorch/bin/python build/images.py plan     # 生成清单，不动文件
+/home/plus/GpuTorch/bin/python build/images.py apply    # 按清单改名
+/home/plus/GpuTorch/bin/python build/images.py verify   # 逐张重算 md5 比对清单
+/home/plus/GpuTorch/bin/python build/images.py revert   # 按清单改回原状
 ```
 
 2026-11-08 实跑：`apply` 改名 494/494；`verify` 缺失 0、md5 不符 0、未按新名命名残留 0。
@@ -93,13 +93,13 @@
 ## 顺带查出的产品缺陷（`[实测]`，未修）
 
 `SlidingWindowEngine.plan()` 在**任一边 ≤512 而另一边 >512** 时抛 `IndexError`：小图兜底分支要求两边都 ≤512
-（`app/logic_layer/sliding_window.py:100`），否则走 `while y + tile <= h` 那条，`rows` 为空，
-到 `sliding_window.py:112` 的 `rows[-1]` 就下标越界。
+（`app/logic_layer/window.py:100`），否则走 `while y + tile <= h` 那条，`rows` 为空，
+到 `window.py:112` 的 `rows[-1]` 就下标越界。
 
 复现（本批有 **15 张** `clean` 命中，多为 1280×4xx 的窄窗口截图）：
 
 ```python
-from app.logic_layer.sliding_window import SlidingWindowEngine
+from app.logic_layer.window import SlidingWindowEngine
 SlidingWindowEngine().plan(491, 1280)     # IndexError: list index out of range
 ```
 

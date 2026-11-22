@@ -142,12 +142,12 @@
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | **契约定义** | `contracts.py` | 两个接口 + 数据契约 + 异常类 |
-| **默认适配器** | `builtin_adapter.py` | RGBInputAdapter / SFRNetOutputAdapter |
+| **默认适配器** | `builtin.py` | RGBInputAdapter / SFRNetOutputAdapter |
 | **模型注册表** | `registry.py` | 懒加载 + 单例 + 设备决策 |
-| **推理服务** | `inference_service.py` | 编排入口，对外唯一 API |
-| **滑窗引擎** | `sliding_window.py` | 切分规划 + 余弦窗融合 |
+| **推理服务** | `inference.py` | 编排入口，对外唯一 API |
+| **滑窗引擎** | `window.py` | 切分规划 + 余弦窗融合 |
 | **后处理器** | `postprocess.py` | sigmoid + 二值化 + 形态学 |
-| **导出服务** | `export_service.py` | 产物落盘 + JSON 元数据 |
+| **导出服务** | `export.py` | 产物落盘 + JSON 元数据 |
 | **配置管理** | `config.py` | 加载 + 合并 + 校验 |
 
 ---

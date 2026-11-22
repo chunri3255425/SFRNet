@@ -10,7 +10,7 @@ SFRNet 是**板端数据面**：上电自启、断网也能完成检测并输出
 （`screen_detected` / `has_moire` / `no_moire`）。本控制台是**消费侧 / 聚合侧**，
 通过板端已有的两条网络出口集中观察与编排**多台**开发板：
 
-- 结果出口：HTTP/SSE（`SFRNet` `adaptation/network/http_server.py`）
+- 结果出口：HTTP/SSE（`SFRNet` `adaptation/network/http.py`）
 - 画面出口：WiFi 帧回传 `IFrameRelay`（TCP + JPEG 帧序列，4 字节长度前缀分包）
 
 **铁律（延续板端 §4.5 旁路诊断面纪律）**：控制台断开，板端照常检测；控制台绝不反向阻塞检测循环。

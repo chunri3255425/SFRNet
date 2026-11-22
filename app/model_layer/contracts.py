@@ -10,11 +10,10 @@
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 import torch
-import torch.nn.functional as F
 
 
 # =============================================================================
